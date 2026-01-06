@@ -33,6 +33,7 @@
             pkgs.zlib
             pkgs.rdkafka
             pkgs.lz4
+            pkgs.protobuf
             netmonpkgs.packages.${system}.libfds
             netmonpkgs.packages.${system}.nemea-framework
           ];

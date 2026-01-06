@@ -10,7 +10,8 @@
   lz4,
   nemea-framework,
   git,
-  cacert
+  cacert,
+  protobuf
 }:
 
 stdenv.mkDerivation rec {
@@ -20,7 +21,7 @@ stdenv.mkDerivation rec {
   src = ./.;
 
   nativeBuildInputs = [ cmake git cacert ];
-  buildInputs = [ libfds docutils libxml2 rdkafka zlib lz4 nemea-framework ];
+  buildInputs = [ libfds docutils libxml2 rdkafka zlib lz4 nemea-framework protobuf ];
 
   postInstall = ''
     cd ../extra_plugins/output/unirec
@@ -38,6 +39,14 @@ stdenv.mkDerivation rec {
     cmake .. -DCMAKE_INSTALL_PREFIX=$out -DCMAKE_C_FLAGS="$CFLAGS -Wno-error=implicit-function-declaration" -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     make
     echo "Make install clickhouse"
+    make install
+    cd ../../protobuf-kafka
+    mkdir build
+    cd build
+    echo "Building Protobuf-Kafka plugin"
+    cmake .. -DCMAKE_INSTALL_PREFIX=$out -DCMAKE_C_FLAGS="$CFLAGS -Wno-error=implicit-function-declaration" -DCMAKE_INSTALL_LIBDIR=lib
+    make
+    echo "Make install protobuf-kafka"
     make install
   '';
 

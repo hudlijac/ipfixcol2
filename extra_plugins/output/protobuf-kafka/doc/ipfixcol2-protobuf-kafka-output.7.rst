@@ -1,0 +1,136 @@
+==================================
+ipfixcol2-protobuf-kafka-output
+==================================
+
+:Author: Generated
+:Date: 2026
+:Manual section: 7
+
+DESCRIPTION
+===========
+
+The **protobuf-kafka** plugin serializes IPFIX flow records into Protocol
+Buffers and sends them to a Kafka topic. It features:
+
+- **Dynamic Schema Loading**: Load .proto files at runtime without
+  compile-time code generation
+- **Zero-Allocation Hot Path**: Reuses message instances and buffers
+  for maximum throughput
+- **RSS Partitioning**: Consistent hashing based on 5-tuple for
+  receiver-side scaling
+- **Kafka Batching**: Aggressive batching to reduce network interrupts
+
+CONFIGURATION
+=============
+
+The plugin accepts the following XML configuration:
+
+.. code-block:: xml
+
+    <output>
+        <name>MyProtoKafka</name>
+        <plugin>protobuf-kafka</plugin>
+        <params>
+            <brokers>127.0.0.1:9092</brokers>
+            <topic>network_flows</topic>
+            <partition>rss</partition>
+            
+            <batch_size>10000</batch_size>
+            <linger_ms>100</linger_ms>
+            <compression>lz4</compression>
+
+            <proto_file>/etc/ipfixcol2/schemas/flow.proto</proto_file>
+            <message_type>Retina.FlowRecord</message_type>
+
+            <map>
+                <field ipfix="iana:sourceIPv4Address" proto="src_ip" />
+                <field ipfix="iana:destinationIPv4Address" proto="dst_ip" />
+                <field ipfix="iana:protocolIdentifier" proto="proto" />
+                <field ipfix="iana:octetDeltaCount" proto="bytes" />
+            </map>
+        </params>
+    </output>
+
+PARAMETERS
+==========
+
+brokers
+    Comma-separated list of Kafka brokers (required)
+
+topic
+    Kafka topic to produce to (required)
+
+partition
+    Partition strategy: ``random`` (default) or ``rss`` (5-tuple hash)
+
+batch_size
+    Kafka producer batch.num.messages (default: 10000)
+
+linger_ms
+    Kafka producer queue.buffering.max.ms (default: 100)
+
+compression
+    Kafka compression codec (default: lz4)
+
+blocking
+    Block when producer queue is full (default: false)
+
+proto_file
+    Path to .proto file defining the message schema (required)
+
+message_type
+    Fully qualified Protobuf message type name (required)
+
+map
+    Field mappings from IPFIX to Protobuf (at least one required)
+
+FIELD MAPPINGS
+==============
+
+Each ``<field>`` element in ``<map>`` specifies:
+
+ipfix
+    IPFIX element specification in format ``scope:name`` (e.g.,
+    ``iana:sourceIPv4Address``)
+
+proto
+    Protobuf field name in the target message
+
+Supported IPFIX to Protobuf type mappings:
+
+- Integer types (8/16/32/64-bit) → int32/int64/uint32/uint64
+- IP addresses → bytes or string
+- Strings → string
+- Octet arrays → bytes
+
+RSS PARTITIONING
+================
+
+When ``partition`` is set to ``rss``, the plugin computes a symmetric
+hash from the 5-tuple (source IP, destination IP, source port,
+destination port, protocol). This ensures:
+
+- Both directions of a flow go to the same partition
+- Load is distributed evenly across partitions
+- Consumers can process flows in order per-connection
+
+EXAMPLE PROTO FILE
+==================
+
+.. code-block:: protobuf
+
+    syntax = "proto3";
+    package Retina;
+
+    message FlowRecord {
+        bytes src_ip = 1;
+        bytes dst_ip = 2;
+        uint32 proto = 3;
+        uint64 bytes = 4;
+        uint64 packets = 5;
+    }
+
+SEE ALSO
+========
+
+ipfixcol2(1), ipfixcol2-json-kafka-output(7)
