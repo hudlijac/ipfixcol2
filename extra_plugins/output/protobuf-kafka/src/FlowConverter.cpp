@@ -51,6 +51,15 @@ FlowConverter::convert(const fds_drec* rec,
     const auto& ipfix_ids = m_table.ipfixIds();
     const auto& entries = m_table.entries();
 
+    // Debug: Check if this is a biflow template
+    static bool logged_biflow = false;
+    if (!logged_biflow && rec->tmplt) {
+        bool is_biflow = (rec->tmplt->flags & FDS_TEMPLATE_BIFLOW) != 0;
+        fprintf(stderr, "DEBUG: Template ID=%u, flags=0x%x, is_biflow=%d\n",
+                rec->tmplt->id, rec->tmplt->flags, is_biflow);
+        logged_biflow = true;
+    }
+
     for (size_t i = 0; i < ipfix_ids.size(); ++i) {
         const auto& [pen, id] = ipfix_ids[i];
         const FieldEntry& entry = entries[i];
@@ -59,6 +68,12 @@ FlowConverter::convert(const fds_drec* rec,
         struct fds_drec_field field;
         if (fds_drec_find(const_cast<fds_drec*>(rec), pen, id, &field) == FDS_EOC) {
             // Field not present in this record - skip
+            // Debug: log when reverse field not found
+            static bool logged_rev = false;
+            if (!logged_rev && pen == 29305) {
+                fprintf(stderr, "DEBUG: Reverse field PEN=%u, ID=%u NOT FOUND in record\n", pen, id);
+                logged_rev = true;
+            }
             continue;
         }
 
