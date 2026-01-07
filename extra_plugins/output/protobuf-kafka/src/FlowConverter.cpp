@@ -128,6 +128,12 @@ FlowConverter::setField(const FieldEntry& entry, const uint8_t* data, size_t siz
     case google::protobuf::FieldDescriptor::TYPE_FIXED64: {
         uint64_t val = 0;
         if (fds_get_uint_be(data, size, &val) == FDS_OK) {
+            // Debug: log reverse field value
+            static bool logged_val = false;
+            if (!logged_val && entry.proto_name == "bytes_rev") {
+                fprintf(stderr, "DEBUG: bytes_rev field: size=%zu, value=%lu\n", size, val);
+                logged_val = true;
+            }
             m_reflection->SetUInt64(m_message, fd, val);
         }
         break;
