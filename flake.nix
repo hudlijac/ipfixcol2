@@ -2,7 +2,7 @@
   description = "ipfixcol2 - IPFIX flow data collector";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     systems.url = "github:nix-systems/default";
     netmonpkgs.url = "github:jaroslavpesek/netmonpkgs";
     flake-utils = {
