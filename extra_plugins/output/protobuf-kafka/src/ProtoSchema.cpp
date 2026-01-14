@@ -1,7 +1,7 @@
 /**
  * \file ProtoSchema.cpp
  * \brief Dynamic protobuf schema loading using reflection
- * \author Generated
+ * \author Jaroslav Pesek
  * \date 2026
  */
 
@@ -28,7 +28,6 @@ void
 ProtoErrorCollector::RecordWarning(absl::string_view filename, int line, int column,
                                     absl::string_view message)
 {
-    // Warnings are ignored for now
     (void)filename;
     (void)line;
     (void)column;
@@ -48,7 +47,6 @@ void
 ProtoErrorCollector::AddWarning(const std::string& filename, int line, int column,
                                  const std::string& message)
 {
-    // Warnings are ignored for now
     (void)filename;
     (void)line;
     (void)column;
@@ -72,32 +70,24 @@ ProtoErrorCollector::error_string() const
 ProtoSchema::ProtoSchema(const std::string& proto_file, const std::string& message_type)
     : m_descriptor(nullptr)
 {
-    // Extract directory and filename from proto_file path
-    // We need to map the directory to "" (root) in the source tree
     std::vector<char> path_buf(proto_file.begin(), proto_file.end());
     path_buf.push_back('\0');
 
     char* dir = dirname(path_buf.data());
     std::string proto_dir = dir;
 
-    // Reset buffer for basename
     path_buf.assign(proto_file.begin(), proto_file.end());
     path_buf.push_back('\0');
     char* base = basename(path_buf.data());
     std::string proto_filename = base;
 
-    // Map the directory containing the .proto file to empty string (root)
     m_source_tree.MapPath("", proto_dir);
-
-    // Also map common include paths
     m_source_tree.MapPath("", "/usr/include");
     m_source_tree.MapPath("", "/usr/local/include");
 
-    // Create importer
     m_importer = std::make_unique<google::protobuf::compiler::Importer>(
         &m_source_tree, &m_error_collector);
 
-    // Import the proto file
     const google::protobuf::FileDescriptor* file_desc =
         m_importer->Import(proto_filename);
 
@@ -113,7 +103,6 @@ ProtoSchema::ProtoSchema(const std::string& proto_file, const std::string& messa
             m_error_collector.error_string());
     }
 
-    // Find the message type
     m_descriptor = m_importer->pool()->FindMessageTypeByName(message_type);
     if (!m_descriptor) {
         throw std::runtime_error(

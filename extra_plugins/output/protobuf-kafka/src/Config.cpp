@@ -1,7 +1,7 @@
 /**
  * \file Config.cpp
  * \brief Configuration parser for protobuf-kafka output plugin
- * \author Generated
+ * \author Jaroslav Pesek
  * \date 2026
  */
 
@@ -32,20 +32,20 @@ enum XmlNodes {
     ATTR_PROTO
 };
 
-// Definition of <field> element attributes
+// <field>
 static const struct fds_xml_args args_field[] = {
     FDS_OPTS_ATTR(ATTR_IPFIX, "ipfix", FDS_OPTS_T_STRING, 0),
     FDS_OPTS_ATTR(ATTR_PROTO, "proto", FDS_OPTS_T_STRING, 0),
     FDS_OPTS_END
 };
 
-// Definition of <map> element
+// <map>
 static const struct fds_xml_args args_map[] = {
     FDS_OPTS_NESTED(NODE_FIELD, "field", args_field, FDS_OPTS_P_MULTI),
     FDS_OPTS_END
 };
 
-// Definition of <params> root element
+// <params>
 static const struct fds_xml_args args_params[] = {
     FDS_OPTS_ROOT("params"),
     FDS_OPTS_ELEM(NODE_BROKERS,      "brokers",      FDS_OPTS_T_STRING, 0),
@@ -62,7 +62,7 @@ static const struct fds_xml_args args_params[] = {
 };
 
 /**
- * \brief Parse IPFIX element specification (e.g., "iana:sourceIPv4Address")
+ * \brief Parse IPFIX element specification
  *
  * \param[in]  spec   IPFIX specification string
  * \param[in]  iemgr  Information Element manager
@@ -144,9 +144,8 @@ Config
 parse_config(const char* params, const fds_iemgr_t* iemgr, ipx_ctx_t* ctx)
 {
     Config cfg;
-    cfg.partition_mode = PartitionMode::RANDOM;  // Default
+    cfg.partition_mode = PartitionMode::RANDOM;
 
-    // Create XML parser
     std::unique_ptr<fds_xml_t, decltype(&fds_xml_destroy)>
         xml(fds_xml_create(), &fds_xml_destroy);
     if (!xml) {

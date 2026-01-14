@@ -1,7 +1,7 @@
 /**
  * \file ProtoSchema.hpp
  * \brief Dynamic protobuf schema loading using reflection
- * \author Generated
+ * \author Jaroslav Pesek
  * \date 2026
  */
 
@@ -16,7 +16,6 @@
 #include <google/protobuf/dynamic_message.h>
 #include <google/protobuf/compiler/importer.h>
 
-// Handle different protobuf versions
 #if GOOGLE_PROTOBUF_VERSION >= 5000000
 #include <absl/strings/string_view.h>
 #endif
@@ -28,7 +27,6 @@ namespace protobuf_kafka {
  */
 class ProtoErrorCollector : public google::protobuf::compiler::MultiFileErrorCollector {
 public:
-    // Newer protobuf versions use RecordError with absl::string_view
 #if GOOGLE_PROTOBUF_VERSION >= 5000000
     void RecordError(absl::string_view filename, int line, int column,
                      absl::string_view message) override;

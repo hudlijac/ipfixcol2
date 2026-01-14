@@ -26,7 +26,6 @@ TranslationTable::build(const std::vector<FieldMapping>& mappings,
     m_ipfix_ids.reserve(mappings.size());
 
     for (const auto& mapping : mappings) {
-        // Find the protobuf field descriptor
         const google::protobuf::FieldDescriptor* fd =
             schema.findField(mapping.proto_name);
 
@@ -36,7 +35,6 @@ TranslationTable::build(const std::vector<FieldMapping>& mappings,
                 "' not found in message type");
         }
 
-        // Get IPFIX element info for type information
         fds_iemgr_element_type ipfix_type = FDS_ET_OCTET_ARRAY;  // Default
         const fds_iemgr_elem* elem =
             fds_iemgr_elem_find_id(iemgr, mapping.ipfix_pen, mapping.ipfix_id);
@@ -44,7 +42,6 @@ TranslationTable::build(const std::vector<FieldMapping>& mappings,
             ipfix_type = elem->data_type;
         }
 
-        // Create entry
         FieldEntry entry;
         entry.fd = fd;
         entry.proto_name = mapping.proto_name;
@@ -54,7 +51,6 @@ TranslationTable::build(const std::vector<FieldMapping>& mappings,
         m_entries.push_back(entry);
         m_ipfix_ids.emplace_back(mapping.ipfix_pen, mapping.ipfix_id);
 
-        // Add to lookup table
         uint64_t key = makeKey(mapping.ipfix_pen, mapping.ipfix_id);
         m_lookup[key] = index;
 

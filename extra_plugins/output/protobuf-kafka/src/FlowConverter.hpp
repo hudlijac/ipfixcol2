@@ -1,7 +1,7 @@
 /**
  * \file FlowConverter.hpp
- * \brief Zero-allocation IPFIX to Protobuf converter for hot path
- * \author Generated
+ * \brief To Protobuf converter for hot path
+ * \author Jaroslav Pesek
  * \date 2026
  */
 
@@ -36,15 +36,7 @@ struct PartitionKey {
 };
 
 /**
- * \brief Zero-allocation IPFIX to Protobuf flow converter
- *
- * This class is designed for the hot processing path. It:
- * - Reuses a single DynamicMessage instance (created once)
- * - Caches the Reflection pointer
- * - Uses a persistent serialization buffer
- * - Uses pre-resolved FieldDescriptor* from TranslationTable
- *
- * NO allocations occur in the convert() method.
+ * \brief IPFIX to Protobuf flow converter
  */
 class FlowConverter {
 public:
@@ -61,17 +53,16 @@ public:
 
     ~FlowConverter();
 
-    // Non-copyable
     FlowConverter(const FlowConverter&) = delete;
     FlowConverter& operator=(const FlowConverter&) = delete;
+    FlowConverter(FlowConverter&&) = delete;
+    FlowConverter& operator=(FlowConverter&&) = delete;
 
     /**
      * \brief Convert an IPFIX record to serialized Protobuf
      *
-     * This is the HOT PATH. Zero allocations occur here.
-     *
      * \param[in]  rec            IPFIX data record
-     * \param[out] out_data       Pointer to serialized data (valid until next call)
+     * \param[out] out_data       Pointer to serialized data
      * \param[out] out_len        Length of serialized data
      * \param[out] partition_key  Partition key for RSS (if mode is RSS)
      * \return true on success, false if conversion failed
@@ -85,20 +76,18 @@ private:
     const TranslationTable& m_table;
     PartitionMode m_partition_mode;
 
-    // Pre-allocated, reused resources
-    google::protobuf::Message* m_message;              ///< Reused message instance
-    const google::protobuf::Reflection* m_reflection;  ///< Cached reflection
-    std::string m_buffer;                               ///< Serialization buffer
+    google::protobuf::Message* m_message;
+    const google::protobuf::Reflection* m_reflection;
+    std::string m_buffer;
 
-    // Well-known IPFIX element IDs for RSS partitioning
     static constexpr uint32_t IANA_PEN = 0;
-    static constexpr uint16_t ID_SRC_IPV4 = 8;    // sourceIPv4Address
-    static constexpr uint16_t ID_DST_IPV4 = 12;   // destinationIPv4Address
-    static constexpr uint16_t ID_SRC_IPV6 = 27;   // sourceIPv6Address
-    static constexpr uint16_t ID_DST_IPV6 = 28;   // destinationIPv6Address
-    static constexpr uint16_t ID_SRC_PORT = 7;    // sourceTransportPort
-    static constexpr uint16_t ID_DST_PORT = 11;   // destinationTransportPort
-    static constexpr uint16_t ID_PROTOCOL = 4;    // protocolIdentifier
+    static constexpr uint16_t ID_SRC_IPV4 = 8;
+    static constexpr uint16_t ID_DST_IPV4 = 12;
+    static constexpr uint16_t ID_SRC_IPV6 = 27;
+    static constexpr uint16_t ID_DST_IPV6 = 28;
+    static constexpr uint16_t ID_SRC_PORT = 7;
+    static constexpr uint16_t ID_DST_PORT = 11;
+    static constexpr uint16_t ID_PROTOCOL = 4;
 
     /**
      * \brief Set a protobuf field from IPFIX field data
@@ -110,9 +99,14 @@ private:
     void setField(const FieldEntry& entry, const uint8_t* data, size_t size);
 
     /**
-     * \brief Extract partition key from IPFIX record
+     * \brief Extract partition field from current IPFIX field (single-pass)
+     *
+     * \param id    IPFIX Information Element ID
+     * \param data  Raw field data
+     * \param size  Size of data
+     * \param key   Partition key to populate
      */
-    void extractPartitionKey(const fds_drec* rec, PartitionKey* key);
+    void extractPartitionField(uint16_t id, const uint8_t* data, size_t size, PartitionKey* key);
 };
 
 } // namespace protobuf_kafka

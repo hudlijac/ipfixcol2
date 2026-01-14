@@ -1,7 +1,7 @@
 /**
  * \file KafkaProducer.hpp
- * \brief Kafka producer wrapper with batching and RSS partitioning
- * \author Generated
+ * \brief Kafka producer wrapper
+ * \author Jaroslav Pesek
  * \date 2026
  */
 
@@ -22,7 +22,7 @@
 namespace protobuf_kafka {
 
 /**
- * \brief Kafka producer with batching and resource-aware configuration
+ * \brief Kafka producer
  */
 class KafkaProducer {
 public:
@@ -35,9 +35,6 @@ public:
      */
     KafkaProducer(const Config& cfg, ipx_ctx_t* ctx);
 
-    /**
-     * \brief Destructor - flushes pending messages and cleans up
-     */
     ~KafkaProducer();
 
     // Non-copyable
@@ -79,7 +76,7 @@ public:
         int32_t partition_count);
 
     /**
-     * \brief Get the number of partitions for the topic
+     * \brief Get the number of partitions for the topic (queried once at startup)
      * \return Number of partitions, or 0 if unknown
      */
     int32_t partitionCount() const { return m_partition_count; }
@@ -95,8 +92,8 @@ private:
         std::atomic<bool> stop;      ///< Stop flag
         rd_kafka_t* kafka;           ///< Kafka handle for polling
 
-        uint64_t cnt_delivered;      ///< Successful deliveries
-        uint64_t cnt_failed;         ///< Failed deliveries
+        std::atomic<uint64_t> cnt_delivered;  ///< Successful deliveries (thread-safe)
+        std::atomic<uint64_t> cnt_failed;     ///< Failed deliveries (thread-safe)
     };
 
     static constexpr int POLLER_TIMEOUT = 100;   ///< Poll timeout in ms
@@ -109,20 +106,17 @@ private:
     int m_produce_flags;
     int32_t m_partition_count = 0;
 
-    // Error aggregation
     struct timespec m_err_ts;
     rd_kafka_resp_err_t m_err_type = RD_KAFKA_RESP_ERR_NO_ERROR;
     uint64_t m_err_cnt = 0;
 
     void produceError(struct timespec ts_now);
 
-    // Polling thread functions
     static void* threadPolling(void* context);
     static void threadDeliveryCallback(rd_kafka_t* rk,
                                         const rd_kafka_message_t* rkmessage,
                                         void* opaque);
 
-    // Query partition count from Kafka
     void queryPartitionCount();
 };
 

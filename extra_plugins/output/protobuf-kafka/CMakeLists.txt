@@ -16,7 +16,7 @@ include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
 
 # Include custom FindXXX modules
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/CMakeModules")
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
 
 # Find IPFIXcol
 find_package(IPFIXcol2 2.3.0 REQUIRED)
@@ -26,6 +26,15 @@ find_package(LibRDKafka 0.9.3 REQUIRED)
 
 # Find Protobuf
 find_package(Protobuf REQUIRED)
+
+# Find xxHash (prefer pkg-config, fallback to custom find module)
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND)
+    pkg_check_modules(XXHASH REQUIRED libxxhash)
+else()
+    find_package(XXHash REQUIRED)
+endif()
+
 
 # Set default build type if not specified by user
 if (NOT CMAKE_BUILD_TYPE)
@@ -54,6 +63,7 @@ set(CMAKE_CXX_FLAGS_DEBUG    "-g -O0 -Wall -Wextra -pedantic")
 include_directories(
     "${IPFIXCOL2_INCLUDE_DIRS}"
     "${Protobuf_INCLUDE_DIRS}"
+    "${XXHASH_INCLUDE_DIRS}"
 )
 
 # Also check if we're building against local repo (for api.h generated file)
@@ -79,6 +89,7 @@ add_library(protobuf-kafka-output MODULE
 target_link_libraries(protobuf-kafka-output
     ${LIBRDKAFKA_LIBRARIES}
     ${Protobuf_LIBRARIES}
+    ${XXHASH_LIBRARIES}
     protobuf
 )
 

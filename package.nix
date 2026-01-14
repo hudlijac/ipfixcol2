@@ -2,6 +2,7 @@
   stdenv,
   lib,
   cmake,
+  pkg-config,
   libfds,
   docutils,
   libxml2,
@@ -11,7 +12,8 @@
   nemea-framework,
   git,
   cacert,
-  protobuf
+  protobuf,
+  xxHash
 }:
 
 stdenv.mkDerivation rec {
@@ -20,8 +22,8 @@ stdenv.mkDerivation rec {
 
   src = ./.;
 
-  nativeBuildInputs = [ cmake git cacert ];
-  buildInputs = [ libfds docutils libxml2 rdkafka zlib lz4 nemea-framework protobuf ];
+  nativeBuildInputs = [ cmake pkg-config git cacert ];
+  buildInputs = [ libfds docutils libxml2 rdkafka zlib lz4 nemea-framework protobuf xxHash ];
 
   postInstall = ''
     cd ../extra_plugins/output/unirec

@@ -1,13 +1,12 @@
 /**
  * \file FlowConverter.cpp
- * \brief Zero-allocation IPFIX to Protobuf converter for hot path
- * \author Generated
+ * \brief To Protobuf converter
+ * \author Jaroslav Pesek
  * \date 2026
  */
 
 #include "FlowConverter.hpp"
 
-#include <cstring>
 #include <arpa/inet.h>
 
 namespace protobuf_kafka {
@@ -20,11 +19,8 @@ FlowConverter::FlowConverter(ProtoSchema& schema,
     , m_message(nullptr)
     , m_reflection(nullptr)
 {
-    // Create the message prototype once - this is the ONLY allocation
     m_message = schema.createMessage();
     m_reflection = m_message->GetReflection();
-
-    // Pre-reserve buffer to avoid reallocations during hot path
     m_buffer.reserve(4096);
 }
 
@@ -39,49 +35,32 @@ FlowConverter::convert(const fds_drec* rec,
                        size_t* out_len,
                        PartitionKey* partition_key)
 {
-    // Clear message for reuse - NO allocation
     m_message->Clear();
+    PartitionKey pk_local{};
+    bool need_partition_key = (m_partition_mode == PartitionMode::RSS && partition_key);
 
-    // Extract partition key if needed
-    if (m_partition_mode == PartitionMode::RSS && partition_key) {
-        extractPartitionKey(rec, partition_key);
-    }
-
-    // Iterate through configured field mappings
     const auto& ipfix_ids = m_table.ipfixIds();
     const auto& entries = m_table.entries();
-
-    // Debug: Check if this is a biflow template
-    static bool logged_biflow = false;
-    if (!logged_biflow && rec->tmplt) {
-        bool is_biflow = (rec->tmplt->flags & FDS_TEMPLATE_BIFLOW) != 0;
-        fprintf(stderr, "DEBUG: Template ID=%u, flags=0x%x, is_biflow=%d\n",
-                rec->tmplt->id, rec->tmplt->flags, is_biflow);
-        logged_biflow = true;
-    }
 
     for (size_t i = 0; i < ipfix_ids.size(); ++i) {
         const auto& [pen, id] = ipfix_ids[i];
         const FieldEntry& entry = entries[i];
 
-        // Find field in IPFIX record
         struct fds_drec_field field;
         if (fds_drec_find(const_cast<fds_drec*>(rec), pen, id, &field) == FDS_EOC) {
-            // Field not present in this record - skip
-            // Debug: log when reverse field not found
-            static bool logged_rev = false;
-            if (!logged_rev && pen == 29305) {
-                fprintf(stderr, "DEBUG: Reverse field PEN=%u, ID=%u NOT FOUND in record\n", pen, id);
-                logged_rev = true;
-            }
             continue;
         }
-
-        // Set the protobuf field
         setField(entry, field.data, field.size);
+
+        if (need_partition_key && pen == IANA_PEN) {
+            extractPartitionField(id, field.data, field.size, &pk_local);
+        }
+    }
+    if (need_partition_key) {
+        pk_local.valid = (pk_local.src_ip != nullptr || pk_local.dst_ip != nullptr);
+        *partition_key = pk_local;
     }
 
-    // Serialize to reusable buffer - NO allocation (buffer is pre-reserved)
     m_buffer.clear();
     if (!m_message->SerializeToString(&m_buffer)) {
         return false;
@@ -96,6 +75,11 @@ void
 FlowConverter::setField(const FieldEntry& entry, const uint8_t* data, size_t size)
 {
     const google::protobuf::FieldDescriptor* fd = entry.fd;
+
+    bool is_datetime = (entry.ipfix_type == FDS_ET_DATE_TIME_SECONDS ||
+                        entry.ipfix_type == FDS_ET_DATE_TIME_MILLISECONDS ||
+                        entry.ipfix_type == FDS_ET_DATE_TIME_MICROSECONDS ||
+                        entry.ipfix_type == FDS_ET_DATE_TIME_NANOSECONDS);
 
     switch (fd->type()) {
     case google::protobuf::FieldDescriptor::TYPE_DOUBLE:
@@ -117,24 +101,32 @@ FlowConverter::setField(const FieldEntry& entry, const uint8_t* data, size_t siz
     case google::protobuf::FieldDescriptor::TYPE_INT64:
     case google::protobuf::FieldDescriptor::TYPE_SINT64:
     case google::protobuf::FieldDescriptor::TYPE_SFIXED64: {
-        int64_t val = 0;
-        if (fds_get_int_be(data, size, &val) == FDS_OK) {
-            m_reflection->SetInt64(m_message, fd, val);
+        if (is_datetime) {
+            uint64_t ts_ms = 0;
+            if (fds_get_datetime_lp_be(data, size, entry.ipfix_type, &ts_ms) == FDS_OK) {
+                m_reflection->SetInt64(m_message, fd, static_cast<int64_t>(ts_ms));
+            }
+        } else {
+            int64_t val = 0;
+            if (fds_get_int_be(data, size, &val) == FDS_OK) {
+                m_reflection->SetInt64(m_message, fd, val);
+            }
         }
         break;
     }
 
     case google::protobuf::FieldDescriptor::TYPE_UINT64:
     case google::protobuf::FieldDescriptor::TYPE_FIXED64: {
-        uint64_t val = 0;
-        if (fds_get_uint_be(data, size, &val) == FDS_OK) {
-            // Debug: log reverse field value
-            static bool logged_val = false;
-            if (!logged_val && entry.proto_name == "bytes_rev") {
-                fprintf(stderr, "DEBUG: bytes_rev field: size=%zu, value=%lu\n", size, val);
-                logged_val = true;
+        if (is_datetime) {
+            uint64_t ts_ms = 0;
+            if (fds_get_datetime_lp_be(data, size, entry.ipfix_type, &ts_ms) == FDS_OK) {
+                m_reflection->SetUInt64(m_message, fd, ts_ms);
             }
-            m_reflection->SetUInt64(m_message, fd, val);
+        } else {
+            uint64_t val = 0;
+            if (fds_get_uint_be(data, size, &val) == FDS_OK) {
+                m_reflection->SetUInt64(m_message, fd, val);
+            }
         }
         break;
     }
@@ -142,18 +134,32 @@ FlowConverter::setField(const FieldEntry& entry, const uint8_t* data, size_t siz
     case google::protobuf::FieldDescriptor::TYPE_INT32:
     case google::protobuf::FieldDescriptor::TYPE_SINT32:
     case google::protobuf::FieldDescriptor::TYPE_SFIXED32: {
-        int64_t val = 0;
-        if (fds_get_int_be(data, size, &val) == FDS_OK) {
-            m_reflection->SetInt32(m_message, fd, static_cast<int32_t>(val));
+        if (is_datetime) {
+            uint64_t ts_ms = 0;
+            if (fds_get_datetime_lp_be(data, size, entry.ipfix_type, &ts_ms) == FDS_OK) {
+                m_reflection->SetInt32(m_message, fd, static_cast<int32_t>(ts_ms / 1000));
+            }
+        } else {
+            int64_t val = 0;
+            if (fds_get_int_be(data, size, &val) == FDS_OK) {
+                m_reflection->SetInt32(m_message, fd, static_cast<int32_t>(val));
+            }
         }
         break;
     }
 
     case google::protobuf::FieldDescriptor::TYPE_UINT32:
     case google::protobuf::FieldDescriptor::TYPE_FIXED32: {
-        uint64_t val = 0;
-        if (fds_get_uint_be(data, size, &val) == FDS_OK) {
-            m_reflection->SetUInt32(m_message, fd, static_cast<uint32_t>(val));
+        if (is_datetime) {
+            uint64_t ts_ms = 0;
+            if (fds_get_datetime_lp_be(data, size, entry.ipfix_type, &ts_ms) == FDS_OK) {
+                m_reflection->SetUInt32(m_message, fd, static_cast<uint32_t>(ts_ms / 1000));
+            }
+        } else {
+            uint64_t val = 0;
+            if (fds_get_uint_be(data, size, &val) == FDS_OK) {
+                m_reflection->SetUInt32(m_message, fd, static_cast<uint32_t>(val));
+            }
         }
         break;
     }
@@ -167,13 +173,11 @@ FlowConverter::setField(const FieldEntry& entry, const uint8_t* data, size_t siz
     }
 
     case google::protobuf::FieldDescriptor::TYPE_STRING:
-        // For strings, set directly from bytes
         m_reflection->SetString(m_message, fd,
                                 std::string(reinterpret_cast<const char*>(data), size));
         break;
 
     case google::protobuf::FieldDescriptor::TYPE_BYTES:
-        // For bytes, set directly
         m_reflection->SetString(m_message, fd,
                                 std::string(reinterpret_cast<const char*>(data), size));
         break;
@@ -187,68 +191,56 @@ FlowConverter::setField(const FieldEntry& entry, const uint8_t* data, size_t siz
     }
 
     default:
-        // Unsupported type - skip silently
         break;
     }
 }
 
 void
-FlowConverter::extractPartitionKey(const fds_drec* rec, PartitionKey* key)
+FlowConverter::extractPartitionField(uint16_t id, const uint8_t* data, size_t size, PartitionKey* key)
 {
-    key->valid = false;
-    key->src_ip = nullptr;
-    key->dst_ip = nullptr;
-    key->src_port = 0;
-    key->dst_port = 0;
-    key->protocol = 0;
-
-    struct fds_drec_field field;
-
-    // Try IPv4 first
-    if (fds_drec_find(const_cast<fds_drec*>(rec), IANA_PEN, ID_SRC_IPV4, &field) != FDS_EOC) {
-        key->src_ip = field.data;
-        key->src_ip_len = field.size;
-    }
-    if (fds_drec_find(const_cast<fds_drec*>(rec), IANA_PEN, ID_DST_IPV4, &field) != FDS_EOC) {
-        key->dst_ip = field.data;
-        key->dst_ip_len = field.size;
-    }
-
-    // Try IPv6 if IPv4 not found
-    if (!key->src_ip) {
-        if (fds_drec_find(const_cast<fds_drec*>(rec), IANA_PEN, ID_SRC_IPV6, &field) != FDS_EOC) {
-            key->src_ip = field.data;
-            key->src_ip_len = field.size;
+    switch (id) {
+    case ID_SRC_IPV4:
+        if (!key->src_ip) {
+            key->src_ip = data;
+            key->src_ip_len = size;
         }
-    }
-    if (!key->dst_ip) {
-        if (fds_drec_find(const_cast<fds_drec*>(rec), IANA_PEN, ID_DST_IPV6, &field) != FDS_EOC) {
-            key->dst_ip = field.data;
-            key->dst_ip_len = field.size;
+        break;
+    case ID_DST_IPV4:
+        if (!key->dst_ip) {
+            key->dst_ip = data;
+            key->dst_ip_len = size;
         }
-    }
-
-    // Get ports
-    if (fds_drec_find(const_cast<fds_drec*>(rec), IANA_PEN, ID_SRC_PORT, &field) != FDS_EOC) {
-        if (field.size == 2) {
-            key->src_port = ntohs(*reinterpret_cast<const uint16_t*>(field.data));
+        break;
+    case ID_SRC_IPV6:
+        if (!key->src_ip) {
+            key->src_ip = data;
+            key->src_ip_len = size;
         }
-    }
-    if (fds_drec_find(const_cast<fds_drec*>(rec), IANA_PEN, ID_DST_PORT, &field) != FDS_EOC) {
-        if (field.size == 2) {
-            key->dst_port = ntohs(*reinterpret_cast<const uint16_t*>(field.data));
+        break;
+    case ID_DST_IPV6:
+        if (!key->dst_ip) {
+            key->dst_ip = data;
+            key->dst_ip_len = size;
         }
-    }
-
-    // Get protocol
-    if (fds_drec_find(const_cast<fds_drec*>(rec), IANA_PEN, ID_PROTOCOL, &field) != FDS_EOC) {
-        if (field.size >= 1) {
-            key->protocol = field.data[0];
+        break;
+    case ID_SRC_PORT:
+        if (size == 2) {
+            key->src_port = ntohs(*reinterpret_cast<const uint16_t*>(data));
         }
+        break;
+    case ID_DST_PORT:
+        if (size == 2) {
+            key->dst_port = ntohs(*reinterpret_cast<const uint16_t*>(data));
+        }
+        break;
+    case ID_PROTOCOL:
+        if (size >= 1) {
+            key->protocol = data[0];
+        }
+        break;
+    default:
+        break;
     }
-
-    // Valid if we have at least one IP address
-    key->valid = (key->src_ip != nullptr || key->dst_ip != nullptr);
 }
 
 } // namespace protobuf_kafka

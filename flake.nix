@@ -27,6 +27,7 @@
             pkgs.nixd
             pkgs.nixpkgs-fmt
             pkgs.cmake
+            pkgs.pkg-config
             pkgs.gcc
             pkgs.docutils
             pkgs.libxml2
@@ -34,12 +35,13 @@
             pkgs.rdkafka
             pkgs.lz4
             pkgs.protobuf
+            pkgs.xxHash
             netmonpkgs.packages.${system}.libfds
             netmonpkgs.packages.${system}.nemea-framework
           ];
         
         shellHook = ''
-          echo "Welcome to IPFIXCol2 development environment 🔥"
+          echo "Welcome to IPFIXCol2 development environment."
         '';
         };
       }

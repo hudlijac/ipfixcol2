@@ -1,13 +1,11 @@
 /**
  * \file plugin.cpp
  * \brief IPFIXcol2 protobuf-kafka output plugin
- * \author Generated
+ * \author Jaroslav Pesek
  * \date 2026
  *
  * This plugin serializes IPFIX flow records into Protocol Buffers and sends
- * them to a Kafka topic. It uses dynamic schema loading (no compile-time
- * .proto generation) and is designed for resource-aware, high-throughput
- * processing with zero allocations in the hot path.
+ * them to a Kafka topic. It uses dynamic schema loading.
  */
 
 #include <ipfixcol2.h>
@@ -64,31 +62,25 @@ ipx_plugin_init(ipx_ctx_t* ctx, const char* params)
 
         auto data = std::make_unique<PluginContext>();
 
-        // Get IE manager for resolving IPFIX element names
         const fds_iemgr_t* iemgr = ipx_ctx_iemgr_get(ctx);
         if (!iemgr) {
             IPX_CTX_ERROR(ctx, "Failed to get Information Element manager");
             return IPX_ERR_DENIED;
         }
 
-        // Parse configuration
         data->config = std::make_unique<protobuf_kafka::Config>(
             protobuf_kafka::parse_config(params, iemgr, ctx));
 
-        // Load protobuf schema
         IPX_CTX_INFO(ctx, "Loading proto file: %s", data->config->proto_file.c_str());
         data->schema = std::make_unique<protobuf_kafka::ProtoSchema>(
             data->config->proto_file, data->config->message_type);
 
-        // Build translation table
         data->table = std::make_unique<protobuf_kafka::TranslationTable>();
         data->table->build(data->config->mappings, *data->schema, iemgr, ctx);
 
-        // Initialize Kafka producer
         data->kafka = std::make_unique<protobuf_kafka::KafkaProducer>(
             *data->config, ctx);
 
-        // Create flow converter
         data->converter = std::make_unique<protobuf_kafka::FlowConverter>(
             *data->schema, *data->table, data->config->partition_mode);
 
@@ -121,12 +113,7 @@ ipx_plugin_destroy(ipx_ctx_t* ctx, void* cfg)
 }
 
 /**
- * \brief Process IPFIX message (HOT PATH)
- *
- * This function is called for each IPFIX message. It iterates through
- * all data records, converts them to Protobuf, and sends to Kafka.
- *
- * Design: Zero allocations in this function. All objects are reused.
+ * \brief Process IPFIX message
  */
 extern "C" IPX_API int
 ipx_plugin_process(ipx_ctx_t* ctx, void* cfg, ipx_msg_t* msg)
@@ -141,7 +128,6 @@ ipx_plugin_process(ipx_ctx_t* ctx, void* cfg, ipx_msg_t* msg)
     for (uint32_t i = 0; i < rec_cnt; ++i) {
         struct ipx_ipfix_record* rec = ipx_msg_ipfix_get_drec(ipfix_msg, i);
 
-        // Skip Options Template records
         if (rec->rec.tmplt->type == FDS_TYPE_TEMPLATE_OPTS) {
             continue;
         }
@@ -150,13 +136,10 @@ ipx_plugin_process(ipx_ctx_t* ctx, void* cfg, ipx_msg_t* msg)
         size_t len = 0;
         protobuf_kafka::PartitionKey pk{};
 
-        // Convert record to Protobuf
         if (!data->converter->convert(&rec->rec, &buf, &len, &pk)) {
-            // Conversion failed - skip this record
             continue;
         }
 
-        // Determine partition
         int32_t partition = RD_KAFKA_PARTITION_UA;
         if (data->config->partition_mode == protobuf_kafka::PartitionMode::RSS && pk.valid) {
             partition = protobuf_kafka::KafkaProducer::computeRssPartition(
@@ -167,7 +150,6 @@ ipx_plugin_process(ipx_ctx_t* ctx, void* cfg, ipx_msg_t* msg)
                 data->kafka->partitionCount());
         }
 
-        // Send to Kafka (copies data internally)
         data->kafka->produce(buf, len, partition);
     }
 

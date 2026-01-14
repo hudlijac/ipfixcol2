@@ -1,7 +1,7 @@
 /**
  * \file KafkaProducer.cpp
- * \brief Kafka producer wrapper with batching and RSS partitioning
- * \author Generated
+ * \brief Kafka producer wrapper
+ * \author Jaroslav Pesek
  * \date 2026
  */
 
@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <cinttypes>
+#include <xxhash.h>
 
 namespace protobuf_kafka {
 
@@ -26,19 +27,16 @@ KafkaProducer::KafkaProducer(const Config& cfg, ipx_ctx_t* ctx)
     clock_gettime(CLOCK_MONOTONIC, &m_err_ts);
     m_thread = std::make_unique<ThreadContext>();
 
-    // Prepare produce flags
     m_produce_flags = RD_KAFKA_MSG_F_COPY;
     if (cfg.blocking) {
         m_produce_flags |= RD_KAFKA_MSG_F_BLOCK;
     }
 
-    // Create Kafka configuration
     rd_kafka_conf_t* kafka_cfg = rd_kafka_conf_new();
     if (!kafka_cfg) {
         throw std::runtime_error("rd_kafka_conf_new() failed");
     }
 
-    // Helper to set config
     auto set_config = [&](const char* key, const char* value) {
         IPX_CTX_DEBUG(ctx, "Setting Kafka config: %s=%s", key, value);
         rd_kafka_conf_res_t res = rd_kafka_conf_set(kafka_cfg, key, value,
@@ -51,30 +49,19 @@ KafkaProducer::KafkaProducer(const Config& cfg, ipx_ctx_t* ctx)
         }
     };
 
-    // Set broker list
     set_config("bootstrap.servers", cfg.brokers.c_str());
-
-    // Set batching configuration
     set_config("batch.num.messages", std::to_string(cfg.batch_size).c_str());
     set_config("queue.buffering.max.ms", std::to_string(cfg.linger_ms).c_str());
-
-    // Set compression
     set_config("compression.codec", cfg.compression.c_str());
-
-    // Set callbacks
     rd_kafka_conf_set_dr_msg_cb(kafka_cfg, threadDeliveryCallback);
     rd_kafka_conf_set_opaque(kafka_cfg, m_thread.get());
 
-    // Create producer
     m_kafka.reset(rd_kafka_new(RD_KAFKA_PRODUCER, kafka_cfg, err_str, err_size));
     if (!m_kafka) {
-        // kafka_cfg is already destroyed by rd_kafka_new on failure
         throw std::runtime_error(
             std::string("Failed to create Kafka producer: ") + err_str);
     }
-    // Note: kafka_cfg ownership transferred to m_kafka
 
-    // Create topic
     m_topic.reset(rd_kafka_topic_new(m_kafka.get(), cfg.topic.c_str(), nullptr));
     if (!m_topic) {
         rd_kafka_resp_err_t err = rd_kafka_last_error();
@@ -83,10 +70,8 @@ KafkaProducer::KafkaProducer(const Config& cfg, ipx_ctx_t* ctx)
             rd_kafka_err2str(err));
     }
 
-    // Query partition count for RSS mode
     queryPartitionCount();
 
-    // Start polling thread
     m_thread->stop = false;
     m_thread->ctx = ctx;
     m_thread->kafka = m_kafka.get();
@@ -105,20 +90,17 @@ KafkaProducer::~KafkaProducer()
 {
     IPX_CTX_DEBUG(m_ctx, "Destroying Kafka producer...");
 
-    // Stop polling thread
     if (m_thread) {
         m_thread->stop = true;
         pthread_join(m_thread->thread, nullptr);
     }
 
-    // Flush pending messages
     if (m_kafka) {
         if (rd_kafka_flush(m_kafka.get(), FLUSH_TIMEOUT) == RD_KAFKA_RESP_ERR__TIMED_OUT) {
             IPX_CTX_WARNING(m_ctx, "Some Kafka messages were not delivered (timeout)");
         }
     }
 
-    // Destroy in correct order
     m_topic.reset();
     m_kafka.reset();
 
@@ -139,8 +121,6 @@ KafkaProducer::produce(const char* data, size_t len, int32_t partition)
     if (rc == 0 && m_err_cnt == 0) {
         return 0;
     }
-
-    // Handle errors with aggregation
     rd_kafka_resp_err_t err_code = rd_kafka_last_error();
 
     struct timespec ts_now;
@@ -188,29 +168,24 @@ KafkaProducer::computeRssPartition(
         return RD_KAFKA_PARTITION_UA;
     }
 
-    // Symmetric hash: XOR IPs and ports so A->B hashes same as B->A
-    uint32_t hash = 0;
+    uint8_t key_buffer[64];
+    size_t key_len = 0;
 
-    // Hash IP addresses (XOR for symmetry)
-    for (size_t i = 0; i < src_ip_len; ++i) {
-        hash ^= static_cast<uint32_t>(src_ip[i]) << ((i % 4) * 8);
+    size_t max_ip_len = (src_ip_len > dst_ip_len) ? src_ip_len : dst_ip_len;
+    for (size_t i = 0; i < max_ip_len; ++i) {
+        uint8_t src_byte = (i < src_ip_len && src_ip) ? src_ip[i] : 0;
+        uint8_t dst_byte = (i < dst_ip_len && dst_ip) ? dst_ip[i] : 0;
+        key_buffer[key_len++] = src_byte ^ dst_byte;
     }
-    for (size_t i = 0; i < dst_ip_len; ++i) {
-        hash ^= static_cast<uint32_t>(dst_ip[i]) << ((i % 4) * 8);
-    }
 
-    // Hash ports (XOR for symmetry)
-    hash ^= (src_port ^ dst_port);
+    uint16_t port_xor = src_port ^ dst_port;
+    key_buffer[key_len++] = static_cast<uint8_t>(port_xor >> 8);
+    key_buffer[key_len++] = static_cast<uint8_t>(port_xor & 0xFF);
+    key_buffer[key_len++] = protocol;
 
-    // Include protocol
-    hash ^= static_cast<uint32_t>(protocol) << 24;
+    uint64_t hash = XXH64(key_buffer, key_len, 0);
 
-    // Simple mixing
-    hash ^= (hash >> 16);
-    hash *= 0x85ebca6b;
-    hash ^= (hash >> 13);
-
-    return static_cast<int32_t>(hash % static_cast<uint32_t>(partition_count));
+    return static_cast<int32_t>(hash % static_cast<uint64_t>(partition_count));
 }
 
 void*
@@ -225,17 +200,16 @@ KafkaProducer::threadPolling(void* context)
     while (!data->stop) {
         rd_kafka_poll(data->kafka, POLLER_TIMEOUT);
 
-        // Print statistics every second
         struct timespec ts_now;
         clock_gettime(CLOCK_MONOTONIC, &ts_now);
         if (difftime(ts_now.tv_sec, ts.tv_sec) >= 1.0) {
             ts = ts_now;
-            if (data->cnt_delivered > 0 || data->cnt_failed > 0) {
-                IPX_CTX_INFO(data->ctx,
-                             "Kafka stats: delivered=%" PRIu64 ", failed=%" PRIu64,
-                             data->cnt_delivered, data->cnt_failed);
-                data->cnt_delivered = 0;
-                data->cnt_failed = 0;
+            uint64_t delivered = data->cnt_delivered.exchange(0);
+            uint64_t failed = data->cnt_failed.exchange(0);
+            if (delivered > 0 || failed > 0) {
+                IPX_CTX_DEBUG(data->ctx,
+                              "Kafka stats: delivered=%" PRIu64 ", failed=%" PRIu64,
+                              delivered, failed);
             }
         }
     }
@@ -253,9 +227,9 @@ KafkaProducer::threadDeliveryCallback(rd_kafka_t* rk,
     auto* data = static_cast<ThreadContext*>(opaque);
 
     if (rkmessage->err) {
-        data->cnt_failed++;
+        data->cnt_failed.fetch_add(1, std::memory_order_relaxed);
     } else {
-        data->cnt_delivered++;
+        data->cnt_delivered.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -265,15 +239,15 @@ KafkaProducer::queryPartitionCount()
     const struct rd_kafka_metadata* metadata = nullptr;
     rd_kafka_resp_err_t err = rd_kafka_metadata(
         m_kafka.get(),
-        0,                    // Only for the specific topic
+        0,
         m_topic.get(),
         &metadata,
-        5000);                // 5 second timeout
+        5000);
 
     if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
         IPX_CTX_WARNING(m_ctx, "Failed to get topic metadata: %s",
                         rd_kafka_err2str(err));
-        m_partition_count = 1;  // Default
+        m_partition_count = 1;
         return;
     }
 

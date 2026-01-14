@@ -1,7 +1,7 @@
 /**
  * \file Config.hpp
  * \brief Configuration parser for protobuf-kafka output plugin
- * \author Generated
+ * \author Jaroslav Pesek
  * \date 2026
  */
 
@@ -39,20 +39,15 @@ struct FieldMapping {
  * \brief Plugin configuration
  */
 struct Config {
-    // Kafka configuration
     std::string brokers;                  ///< Kafka broker list (comma-separated)
     std::string topic;                    ///< Kafka topic name
     PartitionMode partition_mode;         ///< Partition assignment mode
     uint32_t batch_size = 10000;          ///< batch.num.messages
     uint32_t linger_ms = 100;             ///< queue.buffering.max.ms
-    std::string compression = "lz4";      ///< compression.codec
+    std::string compression = "lz4";      ///< compression.codec (none, gzip, snappy, lz4, zstd)
     bool blocking = false;                ///< Block when queue is full
-
-    // Protobuf configuration
     std::string proto_file;               ///< Path to .proto file
     std::string message_type;             ///< Fully qualified message type name
-
-    // Field mappings
     std::vector<FieldMapping> mappings;   ///< IPFIX to Protobuf field mappings
 };
 
