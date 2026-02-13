@@ -20,10 +20,8 @@ TranslationTable::build(const std::vector<FieldMapping>& mappings,
 {
     m_lookup.clear();
     m_entries.clear();
-    m_ipfix_ids.clear();
 
     m_entries.reserve(mappings.size());
-    m_ipfix_ids.reserve(mappings.size());
 
     for (const auto& mapping : mappings) {
         const google::protobuf::FieldDescriptor* fd =
@@ -35,28 +33,65 @@ TranslationTable::build(const std::vector<FieldMapping>& mappings,
                 "' not found in message type");
         }
 
-        fds_iemgr_element_type ipfix_type = FDS_ET_OCTET_ARRAY;  // Default
-        const fds_iemgr_elem* elem =
-            fds_iemgr_elem_find_id(iemgr, mapping.ipfix_pen, mapping.ipfix_id);
-        if (elem) {
-            ipfix_type = elem->data_type;
+        const fds_iemgr_elem* root_elem =
+            fds_iemgr_elem_find_id(iemgr, mapping.root_pen, mapping.root_id);
+        if (!root_elem) {
+            throw std::runtime_error(
+                "IPFIX element for mapping '" + mapping.ipfix_spec + "' not found in IE manager");
+        }
+
+        MappingKey key;
+        key.root_pen = mapping.root_pen;
+        key.root_id = mapping.root_id;
+
+        fds_iemgr_element_type value_type = root_elem->data_type;
+        if (mapping.is_list) {
+            if (root_elem->data_type != FDS_ET_BASIC_LIST) {
+                throw std::runtime_error(
+                    "Mapping '" + mapping.ipfix_spec +
+                    "' uses list selector but root element is not basicList");
+            }
+
+            const fds_iemgr_elem* list_elem =
+                fds_iemgr_elem_find_id(iemgr, mapping.list_pen, mapping.list_id);
+            if (!list_elem) {
+                throw std::runtime_error(
+                    "List element in mapping '" + mapping.ipfix_spec + "' not found in IE manager");
+            }
+
+            if (!fd->is_repeated()) {
+                throw std::runtime_error(
+                    "Mapping '" + mapping.ipfix_spec + "' targets non-repeated protobuf field '" +
+                    mapping.proto_name + "'");
+            }
+
+            key.has_list_elem = true;
+            key.list_pen = mapping.list_pen;
+            key.list_id = mapping.list_id;
+            value_type = list_elem->data_type;
         }
 
         FieldEntry entry;
         entry.fd = fd;
         entry.proto_name = mapping.proto_name;
-        entry.ipfix_type = ipfix_type;
+        entry.ipfix_spec = mapping.ipfix_spec;
+        entry.is_list = mapping.is_list;
+        entry.ipfix_type = value_type;
 
         size_t index = m_entries.size();
         m_entries.push_back(entry);
-        m_ipfix_ids.emplace_back(mapping.ipfix_pen, mapping.ipfix_id);
 
-        uint64_t key = makeKey(mapping.ipfix_pen, mapping.ipfix_id);
-        m_lookup[key] = index;
+        const bool inserted = m_lookup.emplace(key, index).second;
+        if (!inserted) {
+            throw std::runtime_error(
+                "Duplicate mapping key for IPFIX specification '" + mapping.ipfix_spec + "'");
+        }
 
-        IPX_CTX_DEBUG(ctx, "Mapping: %s (PEN=%u, ID=%u) -> %s (proto type=%d)",
+        IPX_CTX_DEBUG(ctx, "Mapping: %s (root PEN=%u, root ID=%u, list PEN=%u, list ID=%u) -> %s (proto type=%d)",
                       mapping.ipfix_spec.c_str(),
-                      mapping.ipfix_pen, mapping.ipfix_id,
+                      mapping.root_pen, mapping.root_id,
+                      mapping.is_list ? mapping.list_pen : 0U,
+                      mapping.is_list ? mapping.list_id : 0U,
                       mapping.proto_name.c_str(),
                       static_cast<int>(fd->type()));
     }
@@ -66,9 +101,8 @@ TranslationTable::build(const std::vector<FieldMapping>& mappings,
 }
 
 const FieldEntry*
-TranslationTable::lookup(uint32_t pen, uint16_t id) const
+TranslationTable::lookup(const MappingKey& key) const
 {
-    uint64_t key = makeKey(pen, id);
     auto it = m_lookup.find(key);
     if (it == m_lookup.end()) {
         return nullptr;

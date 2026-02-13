@@ -11,7 +11,11 @@
 #include <ipfixcol2.h>
 #include <stdexcept>
 #include <memory>
+#include <cctype>
+#include <cerrno>
 #include <cstring>
+#include <cstdlib>
+#include <limits>
 
 namespace protobuf_kafka {
 
@@ -62,25 +66,137 @@ static const struct fds_xml_args args_params[] = {
 };
 
 /**
- * \brief Parse IPFIX element specification
+ * \brief Trim leading/trailing ASCII whitespace
+ */
+static std::string
+trim_copy(const std::string& input)
+{
+    size_t begin = 0;
+    while (begin < input.size() &&
+           std::isspace(static_cast<unsigned char>(input[begin])) != 0) {
+        ++begin;
+    }
+
+    size_t end = input.size();
+    while (end > begin &&
+           std::isspace(static_cast<unsigned char>(input[end - 1])) != 0) {
+        --end;
+    }
+
+    return input.substr(begin, end - begin);
+}
+
+/**
+ * \brief Parse numeric IPFIX element specification in "e<pen>id<id>" format
+ */
+static bool
+parse_numeric_ipfix_spec(const std::string& spec, uint32_t& pen, uint16_t& id)
+{
+    if (spec.size() < 5U || (spec[0] != 'e' && spec[0] != 'E')) {
+        return false;
+    }
+
+    char* end_ptr = nullptr;
+    errno = 0;
+    unsigned long parsed_pen = std::strtoul(spec.c_str() + 1, &end_ptr, 10);
+    if (errno != 0 || end_ptr == spec.c_str() + 1 || end_ptr == nullptr ||
+        parsed_pen > std::numeric_limits<uint32_t>::max()) {
+        return false;
+    }
+
+    if (end_ptr == nullptr || *end_ptr == '\0' || *(end_ptr + 1) == '\0') {
+        return false;
+    }
+    if ((end_ptr[0] != 'i' && end_ptr[0] != 'I') ||
+        (end_ptr[1] != 'd' && end_ptr[1] != 'D')) {
+        return false;
+    }
+
+    char* id_end = nullptr;
+    errno = 0;
+    unsigned long parsed_id = std::strtoul(end_ptr + 2, &id_end, 10);
+    if (errno != 0 || id_end == end_ptr + 2 || id_end == nullptr || *id_end != '\0' ||
+        parsed_id > std::numeric_limits<uint16_t>::max()) {
+        return false;
+    }
+
+    pen = static_cast<uint32_t>(parsed_pen);
+    id = static_cast<uint16_t>(parsed_id);
+    return true;
+}
+
+/**
+ * \brief Parse one IPFIX token (name or "e<pen>id<id>")
  *
- * \param[in]  spec   IPFIX specification string
+ * \param[in]  token  Token to parse
  * \param[in]  iemgr  Information Element manager
  * \param[out] pen    Parsed PEN
  * \param[out] id     Parsed element ID
- * \return true on success, false if element not found
+ * \return true on success
  */
 static bool
-parse_ipfix_spec(const char* spec, const fds_iemgr_t* iemgr,
-                 uint32_t& pen, uint16_t& id)
+parse_ipfix_token(const std::string& token, const fds_iemgr_t* iemgr,
+                  uint32_t& pen, uint16_t& id)
 {
-    const fds_iemgr_elem* elem = fds_iemgr_elem_find_name(iemgr, spec);
+    const std::string normalized = trim_copy(token);
+    if (normalized.empty()) {
+        return false;
+    }
+
+    if (parse_numeric_ipfix_spec(normalized, pen, id)) {
+        return true;
+    }
+
+    const fds_iemgr_elem* elem = fds_iemgr_elem_find_name(iemgr, normalized.c_str());
     if (!elem) {
         return false;
     }
 
     pen = elem->scope->pen;
     id = elem->id;
+    return true;
+}
+
+/**
+ * \brief Parse an IPFIX specification
+ *
+ * Supports:
+ * - single field: "scope:name" or "e<pen>id<id>"
+ * - basicList selector: "<root>/<list_elem>"
+ *
+ * \param[in]  spec      IPFIX specification string
+ * \param[in]  iemgr  Information Element manager
+ * \param[out] mapping Parsed mapping record
+ * \return true on success, false if element not found
+ */
+static bool
+parse_ipfix_spec(const std::string& spec, const fds_iemgr_t* iemgr,
+                 FieldMapping& mapping)
+{
+    const std::string normalized = trim_copy(spec);
+    if (normalized.empty()) {
+        return false;
+    }
+
+    const size_t slash_pos = normalized.find('/');
+    if (slash_pos == std::string::npos) {
+        return parse_ipfix_token(normalized, iemgr, mapping.root_pen, mapping.root_id);
+    }
+
+    if (normalized.find('/', slash_pos + 1) != std::string::npos) {
+        return false;
+    }
+
+    const std::string root_token = normalized.substr(0, slash_pos);
+    const std::string child_token = normalized.substr(slash_pos + 1);
+    if (!parse_ipfix_token(root_token, iemgr, mapping.root_pen, mapping.root_id)) {
+        return false;
+    }
+    if (!parse_ipfix_token(child_token, iemgr, mapping.list_pen, mapping.list_id)) {
+        return false;
+    }
+
+    mapping.is_list = true;
     return true;
 }
 
@@ -114,9 +230,8 @@ parse_field(fds_xml_ctx_t* ctx, const fds_iemgr_t* iemgr)
         throw std::runtime_error("<field> missing 'proto' attribute");
     }
 
-    if (!parse_ipfix_spec(ipfix_spec.c_str(), iemgr,
-                          mapping.ipfix_pen, mapping.ipfix_id)) {
-        throw std::runtime_error("Unknown IPFIX element: " + ipfix_spec);
+    if (!parse_ipfix_spec(ipfix_spec, iemgr, mapping)) {
+        throw std::runtime_error("Unknown or invalid IPFIX element specification: " + ipfix_spec);
     }
 
     mapping.ipfix_spec = ipfix_spec;

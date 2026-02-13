@@ -89,14 +89,11 @@ private:
     static constexpr uint16_t ID_DST_PORT = 11;
     static constexpr uint16_t ID_PROTOCOL = 4;
 
-    /**
-     * \brief Set a protobuf field from IPFIX field data
-     *
-     * \param entry  Translation table entry with cached FieldDescriptor
-     * \param data   Raw IPFIX field data
-     * \param size   Size of data
-     */
-    void setField(const FieldEntry& entry, const uint8_t* data, size_t size);
+    /// Convert one scalar value into the protobuf field.
+    bool setFieldValue(const FieldEntry& entry, const uint8_t* data, size_t size, bool append);
+
+    /// Convert whole basicList into a repeated protobuf field.
+    bool setBasicListField(const FieldEntry& entry, const struct fds_drec_field& field);
 
     /**
      * \brief Extract partition field from current IPFIX field (single-pass)

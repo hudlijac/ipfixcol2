@@ -29,8 +29,11 @@ enum class PartitionMode {
  * \brief Mapping between IPFIX field and Protobuf field
  */
 struct FieldMapping {
-    uint32_t ipfix_pen;      ///< IPFIX Private Enterprise Number
-    uint16_t ipfix_id;       ///< IPFIX Information Element ID
+    uint32_t root_pen = 0;      ///< Root IPFIX PEN (field itself)
+    uint16_t root_id = 0;       ///< Root IPFIX IE ID (field itself)
+    bool is_list = false;       ///< True when mapping points to a basicList element
+    uint32_t list_pen = 0;      ///< basicList element PEN (valid when is_list=true)
+    uint16_t list_id = 0;       ///< basicList element IE ID (valid when is_list=true)
     std::string proto_name;  ///< Protobuf field name
     std::string ipfix_spec;  ///< Original IPFIX specification (for error messages)
 };

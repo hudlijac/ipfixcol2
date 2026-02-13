@@ -90,11 +90,18 @@ FIELD MAPPINGS
 Each ``<field>`` element in ``<map>`` specifies:
 
 ipfix
-    IPFIX element specification in format ``scope:name`` (e.g.,
-    ``iana:sourceIPv4Address``)
+    IPFIX element specification in one of these formats:
+
+    - ``scope:name`` (e.g., ``iana:sourceIPv4Address``)
+    - ``e<pen>id<id>`` (e.g., ``e0id8``)
+    - ``<root>/<list_elem>`` for basicList element selection
+      (e.g., ``e0id291/cesnet:packetLength``)
 
 proto
     Protobuf field name in the target message
+
+If ``ipfix`` uses ``<root>/<list_elem>``, ``proto`` must reference a
+``repeated`` Protobuf field.
 
 Supported IPFIX to Protobuf type mappings:
 
@@ -102,6 +109,17 @@ Supported IPFIX to Protobuf type mappings:
 - IP addresses → bytes or string
 - Strings → string
 - Octet arrays → bytes
+
+Example mappings for packet-level basicList fields:
+
+.. code-block:: xml
+
+    <map>
+        <field ipfix="e0id291/cesnet:packetLength" proto="PPI_PKT_LENGTHS" />
+        <field ipfix="e0id291/cesnet:packetTime" proto="PPI_PKT_TIMES" />
+        <field ipfix="e0id291/cesnet:packetDirection" proto="PPI_PKT_DIRECTIONS" />
+        <field ipfix="e0id291/cesnet:packetFlag" proto="PPI_PKT_FLAGS" />
+    </map>
 
 RSS PARTITIONING
 ================
