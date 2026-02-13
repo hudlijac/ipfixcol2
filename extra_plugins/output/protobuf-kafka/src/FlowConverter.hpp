@@ -22,9 +22,12 @@
 namespace protobuf_kafka {
 
 /**
- * \brief Key for RSS partition computation
+ * \brief Inputs for RSS partition computation
  */
 struct PartitionKey {
+    uint64_t flow_id = 0;
+    bool has_flow_id = false;
+
     const uint8_t* src_ip = nullptr;
     size_t src_ip_len = 0;
     const uint8_t* dst_ip = nullptr;
@@ -88,6 +91,7 @@ private:
     static constexpr uint16_t ID_SRC_PORT = 7;
     static constexpr uint16_t ID_DST_PORT = 11;
     static constexpr uint16_t ID_PROTOCOL = 4;
+    static constexpr uint16_t ID_FLOW_ID = 148;
 
     /// Convert one scalar value into the protobuf field.
     bool setFieldValue(const FieldEntry& entry, const uint8_t* data, size_t size, bool append);

@@ -22,7 +22,7 @@ namespace protobuf_kafka {
  */
 enum class PartitionMode {
     RANDOM,  ///< Random partition assignment (RD_KAFKA_PARTITION_UA)
-    RSS      ///< Receiver-side scaling based on 5-tuple hash
+    RSS      ///< Receiver-side scaling based on flowId (fallback to 5-tuple hash)
 };
 
 /**

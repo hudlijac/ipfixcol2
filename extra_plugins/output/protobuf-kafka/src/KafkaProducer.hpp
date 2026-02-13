@@ -54,6 +54,17 @@ public:
     int produce(const char* data, size_t len, int32_t partition = RD_KAFKA_PARTITION_UA);
 
     /**
+     * \brief Compute RSS partition from flow ID
+     *
+     * \param flow_id          Flow identifier
+     * \param partition_count  Number of partitions
+     * \return Partition number [0, partition_count)
+     */
+    static int32_t computeRssPartitionFromFlowId(
+        uint64_t flow_id,
+        int32_t partition_count);
+
+    /**
      * \brief Compute RSS partition from 5-tuple
      *
      * Uses symmetric hashing so both directions of a flow go to the same partition.

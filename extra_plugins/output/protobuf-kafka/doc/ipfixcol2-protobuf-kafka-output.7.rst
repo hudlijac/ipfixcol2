@@ -16,8 +16,8 @@ Buffers and sends them to a Kafka topic. It features:
   compile-time code generation
 - **Zero-Allocation Hot Path**: Reuses message instances and buffers
   for maximum throughput
-- **RSS Partitioning**: Consistent hashing based on 5-tuple for
-  receiver-side scaling
+- **RSS Partitioning**: flowId-based partitioning (with 5-tuple fallback)
+  for receiver-side scaling
 - **Kafka Batching**: Aggressive batching to reduce network interrupts
 
 CONFIGURATION
@@ -61,7 +61,7 @@ topic
     Kafka topic to produce to (required)
 
 partition
-    Partition strategy: ``random`` (default) or ``rss`` (5-tuple hash)
+    Partition strategy: ``random`` (default) or ``rss`` (flowId, fallback to 5-tuple hash)
 
 batch_size
     Kafka producer batch.num.messages (default: 10000)
@@ -124,9 +124,10 @@ Example mappings for packet-level basicList fields:
 RSS PARTITIONING
 ================
 
-When ``partition`` is set to ``rss``, the plugin computes a symmetric
-hash from the 5-tuple (source IP, destination IP, source port,
-destination port, protocol). This ensures:
+When ``partition`` is set to ``rss``, the plugin uses ``flowId`` to pick
+partition ``flowId % partition_count``. If ``flowId`` is missing, it falls
+back to symmetric hashing from the 5-tuple (source IP, destination IP,
+source port, destination port, protocol). This ensures:
 
 - Both directions of a flow go to the same partition
 - Load is distributed evenly across partitions

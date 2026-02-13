@@ -142,12 +142,18 @@ ipx_plugin_process(ipx_ctx_t* ctx, void* cfg, ipx_msg_t* msg)
 
         int32_t partition = RD_KAFKA_PARTITION_UA;
         if (data->config->partition_mode == protobuf_kafka::PartitionMode::RSS && pk.valid) {
-            partition = protobuf_kafka::KafkaProducer::computeRssPartition(
-                pk.src_ip, pk.src_ip_len,
-                pk.dst_ip, pk.dst_ip_len,
-                pk.src_port, pk.dst_port,
-                pk.protocol,
-                data->kafka->partitionCount());
+            if (pk.has_flow_id) {
+                partition = protobuf_kafka::KafkaProducer::computeRssPartitionFromFlowId(
+                    pk.flow_id,
+                    data->kafka->partitionCount());
+            } else {
+                partition = protobuf_kafka::KafkaProducer::computeRssPartition(
+                    pk.src_ip, pk.src_ip_len,
+                    pk.dst_ip, pk.dst_ip_len,
+                    pk.src_port, pk.dst_port,
+                    pk.protocol,
+                    data->kafka->partitionCount());
+            }
         }
 
         data->kafka->produce(buf, len, partition);

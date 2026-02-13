@@ -157,6 +157,18 @@ KafkaProducer::produceError(struct timespec ts_now)
 }
 
 int32_t
+KafkaProducer::computeRssPartitionFromFlowId(
+    uint64_t flow_id,
+    int32_t partition_count)
+{
+    if (partition_count <= 0) {
+        return RD_KAFKA_PARTITION_UA;
+    }
+
+    return static_cast<int32_t>(flow_id % static_cast<uint64_t>(partition_count));
+}
+
+int32_t
 KafkaProducer::computeRssPartition(
     const uint8_t* src_ip, size_t src_ip_len,
     const uint8_t* dst_ip, size_t dst_ip_len,

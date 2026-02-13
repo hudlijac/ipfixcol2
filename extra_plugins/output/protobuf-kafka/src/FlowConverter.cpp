@@ -94,7 +94,8 @@ FlowConverter::convert(const fds_drec* rec,
     }
 
     if (need_partition_key) {
-        pk_local.valid = (pk_local.src_ip != nullptr || pk_local.dst_ip != nullptr);
+        pk_local.valid = pk_local.has_flow_id ||
+            (pk_local.src_ip != nullptr || pk_local.dst_ip != nullptr);
         *partition_key = pk_local;
     }
 
@@ -364,6 +365,14 @@ FlowConverter::extractPartitionField(uint16_t id, const uint8_t* data, size_t si
             key->protocol = data[0];
         }
         break;
+    case ID_FLOW_ID: {
+        uint64_t flow_id = 0;
+        if (fds_get_uint_be(data, size, &flow_id) == FDS_OK) {
+            key->flow_id = flow_id;
+            key->has_flow_id = true;
+        }
+        break;
+    }
     default:
         break;
     }
