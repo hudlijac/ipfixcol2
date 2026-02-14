@@ -12,6 +12,87 @@
 
 namespace protobuf_kafka {
 
+namespace {
+
+inline bool
+isUtf8Cont(uint8_t byte)
+{
+    return (byte & 0xC0U) == 0x80U;
+}
+
+/**
+ * \brief Convert arbitrary bytes to valid UTF-8 by replacing invalid sequences with '?'
+ */
+std::string
+sanitizeUtf8(const uint8_t* data, size_t size)
+{
+    std::string out;
+    out.reserve(size);
+
+    size_t i = 0;
+    while (i < size) {
+        const uint8_t c0 = data[i];
+        if (c0 <= 0x7FU) {
+            out.push_back(static_cast<char>(c0));
+            ++i;
+            continue;
+        }
+
+        size_t need = 0;
+        if (c0 >= 0xC2U && c0 <= 0xDFU) {
+            need = 1;
+        } else if (c0 >= 0xE0U && c0 <= 0xEFU) {
+            need = 2;
+        } else if (c0 >= 0xF0U && c0 <= 0xF4U) {
+            need = 3;
+        } else {
+            out.push_back('?');
+            ++i;
+            continue;
+        }
+
+        if (i + need >= size) {
+            out.push_back('?');
+            break;
+        }
+
+        bool ok = true;
+        for (size_t j = 1; j <= need; ++j) {
+            if (!isUtf8Cont(data[i + j])) {
+                ok = false;
+                break;
+            }
+        }
+
+        if (ok && need == 2) {
+            const uint8_t c1 = data[i + 1];
+            // Reject overlong 3-byte sequences and UTF-16 surrogate range.
+            if ((c0 == 0xE0U && c1 < 0xA0U) || (c0 == 0xEDU && c1 >= 0xA0U)) {
+                ok = false;
+            }
+        } else if (ok && need == 3) {
+            const uint8_t c1 = data[i + 1];
+            // Reject overlong 4-byte sequences and code points above U+10FFFF.
+            if ((c0 == 0xF0U && c1 < 0x90U) || (c0 == 0xF4U && c1 > 0x8FU)) {
+                ok = false;
+            }
+        }
+
+        if (!ok) {
+            out.push_back('?');
+            ++i;
+            continue;
+        }
+
+        out.append(reinterpret_cast<const char*>(data + i), need + 1);
+        i += need + 1;
+    }
+
+    return out;
+}
+
+} // namespace
+
 FlowConverter::FlowConverter(ProtoSchema& schema,
                              const TranslationTable& table,
                              PartitionMode mode)
@@ -271,6 +352,16 @@ FlowConverter::setFieldValue(const FieldEntry& entry, const uint8_t* data, size_
     }
 
     case google::protobuf::FieldDescriptor::TYPE_STRING:
+    {
+        std::string value = sanitizeUtf8(data, size);
+        if (use_append) {
+            m_reflection->AddString(m_message, fd, value);
+        } else {
+            m_reflection->SetString(m_message, fd, value);
+        }
+        return true;
+    }
+
     case google::protobuf::FieldDescriptor::TYPE_BYTES:
     {
         std::string value(reinterpret_cast<const char*>(data), size);
