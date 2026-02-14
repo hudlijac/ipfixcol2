@@ -45,7 +45,8 @@ FlowConverter::convert(const fds_drec* rec,
 
     int rc = FDS_OK;
     while ((rc = fds_drec_iter_next(&it)) != FDS_EOC) {
-        if (rc != FDS_OK || it.field.info == nullptr) {
+        // fds_drec_iter_next() returns field index on success (0, 1, 2, ...).
+        if (rc < 0 || it.field.info == nullptr) {
             continue;
         }
 
