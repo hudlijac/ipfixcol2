@@ -120,7 +120,9 @@ private:
     struct timespec m_err_ts;
     rd_kafka_resp_err_t m_err_type = RD_KAFKA_RESP_ERR_NO_ERROR;
     uint64_t m_err_cnt = 0;
+    pthread_mutex_t m_err_lock = PTHREAD_MUTEX_INITIALIZER;
 
+    /// Aggregate/log produce errors. Caller must hold m_err_lock.
     void produceError(struct timespec ts_now);
 
     static void* threadPolling(void* context);

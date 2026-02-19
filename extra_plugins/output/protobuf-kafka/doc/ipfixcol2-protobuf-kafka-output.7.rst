@@ -14,10 +14,12 @@ Buffers and sends them to a Kafka topic. It features:
 
 - **Dynamic Schema Loading**: Load .proto files at runtime without
   compile-time code generation
-- **Zero-Allocation Hot Path**: Reuses message instances and buffers
-  for maximum throughput
+- **Reflection-Free Encoding**: Direct protobuf wire encoding on the hot path
+  with reusable buffers
 - **RSS Partitioning**: flowId-based partitioning (with 5-tuple fallback)
   for receiver-side scaling
+- **Parallel Conversion/Produce**: Multiple workers can convert and send records
+  concurrently
 - **Kafka Batching**: Aggressive batching to reduce network interrupts
 
 CONFIGURATION
@@ -38,6 +40,8 @@ The plugin accepts the following XML configuration:
             <batch_size>10000</batch_size>
             <linger_ms>100</linger_ms>
             <compression>lz4</compression>
+            <workers>8</workers>
+            <parallel_min_records>64</parallel_min_records>
 
             <proto_file>/etc/ipfixcol2/schemas/flow.proto</proto_file>
             <message_type>Retina.FlowRecord</message_type>
@@ -75,6 +79,14 @@ compression
 blocking
     Block when producer queue is full (default: false)
 
+workers
+    Number of worker threads used for conversion + direct Kafka produce
+    (default: half of logical CPUs, minimum 1)
+
+parallel_min_records
+    Parallel path is used only when message record count is at least this value
+    (default: 64)
+
 proto_file
     Path to .proto file defining the message schema (required)
 
@@ -102,6 +114,9 @@ proto
 
 If ``ipfix`` uses ``<root>/<list_elem>``, ``proto`` must reference a
 ``repeated`` Protobuf field.
+
+If an IPFIX IPv4/IPv6 field is mapped to Protobuf ``bytes``, payload bytes are
+emitted in little-endian order (reversed from network byte order).
 
 Supported IPFIX to Protobuf type mappings:
 
@@ -132,6 +147,13 @@ source port, destination port, protocol). This ensures:
 - Both directions of a flow go to the same partition
 - Load is distributed evenly across partitions
 - Consumers can process flows in order per-connection
+
+PARALLEL EMISSION
+=================
+
+When ``workers > 1`` and a message has at least ``parallel_min_records`` records,
+workers process records in parallel and produce directly to Kafka. In this mode,
+record emission order is not guaranteed.
 
 EXAMPLE PROTO FILE
 ==================

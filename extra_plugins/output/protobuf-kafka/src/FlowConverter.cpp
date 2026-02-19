@@ -459,7 +459,15 @@ FlowConverter::appendValue(const FieldEntry& entry,
         return true;
 
     case ProtoType::TYPE_BYTES:
-        appendLengthDelimited(data, size);
+        appendTagIfNeeded();
+        appendVarint(out, size);
+        if (entry.source_is_ip_address) {
+            for (size_t i = size; i > 0; --i) {
+                out.push_back(static_cast<char>(data[i - 1]));
+            }
+        } else if (size > 0) {
+            out.append(reinterpret_cast<const char*>(data), size);
+        }
         return true;
 
     case ProtoType::TYPE_ENUM: {

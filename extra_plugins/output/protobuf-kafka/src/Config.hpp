@@ -49,6 +49,8 @@ struct Config {
     uint32_t linger_ms = 100;             ///< queue.buffering.max.ms
     std::string compression = "lz4";      ///< compression.codec (none, gzip, snappy, lz4, zstd)
     bool blocking = false;                ///< Block when queue is full
+    uint32_t workers = 1;                 ///< Number of converter/producer workers
+    uint32_t parallel_min_records = 64;   ///< Minimum records in a message to enable parallel path
     std::string proto_file;               ///< Path to .proto file
     std::string message_type;             ///< Fully qualified message type name
     std::vector<FieldMapping> mappings;   ///< IPFIX to Protobuf field mappings

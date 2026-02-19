@@ -104,6 +104,13 @@ KafkaProducer::~KafkaProducer()
     m_topic.reset();
     m_kafka.reset();
 
+    struct timespec ts_now;
+    clock_gettime(CLOCK_MONOTONIC, &ts_now);
+    pthread_mutex_lock(&m_err_lock);
+    produceError(ts_now);
+    pthread_mutex_unlock(&m_err_lock);
+    pthread_mutex_destroy(&m_err_lock);
+
     IPX_CTX_DEBUG(m_ctx, "Kafka producer destroyed");
 }
 
@@ -118,25 +125,26 @@ KafkaProducer::produce(const char* data, size_t len, int32_t partition)
         nullptr, 0,                     // Key
         nullptr);                       // Opaque
 
-    if (rc == 0 && m_err_cnt == 0) {
+    if (rc == 0) {
         return 0;
     }
+
     rd_kafka_resp_err_t err_code = rd_kafka_last_error();
 
     struct timespec ts_now;
     clock_gettime(CLOCK_MONOTONIC, &ts_now);
 
-    if (rc != 0) {
-        if (err_code != m_err_type) {
-            produceError(ts_now);
-            m_err_type = err_code;
-        }
-        m_err_cnt++;
+    pthread_mutex_lock(&m_err_lock);
+    if (err_code != m_err_type) {
+        produceError(ts_now);
+        m_err_type = err_code;
     }
+    m_err_cnt++;
 
     if (difftime(ts_now.tv_sec, m_err_ts.tv_sec) >= 1.0) {
         produceError(ts_now);
     }
+    pthread_mutex_unlock(&m_err_lock);
 
     return rc;
 }

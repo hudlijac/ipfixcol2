@@ -16,6 +16,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <limits>
+#include <unistd.h>
 
 namespace protobuf_kafka {
 
@@ -28,6 +29,8 @@ enum XmlNodes {
     NODE_LINGER_MS,
     NODE_COMPRESSION,
     NODE_BLOCKING,
+    NODE_WORKERS,
+    NODE_PARALLEL_MIN_RECORDS,
     NODE_PROTO_FILE,
     NODE_MESSAGE_TYPE,
     NODE_MAP,
@@ -59,6 +62,9 @@ static const struct fds_xml_args args_params[] = {
     FDS_OPTS_ELEM(NODE_LINGER_MS,    "linger_ms",    FDS_OPTS_T_UINT,   FDS_OPTS_P_OPT),
     FDS_OPTS_ELEM(NODE_COMPRESSION,  "compression",  FDS_OPTS_T_STRING, FDS_OPTS_P_OPT),
     FDS_OPTS_ELEM(NODE_BLOCKING,     "blocking",     FDS_OPTS_T_BOOL,   FDS_OPTS_P_OPT),
+    FDS_OPTS_ELEM(NODE_WORKERS,      "workers",      FDS_OPTS_T_UINT,   FDS_OPTS_P_OPT),
+    FDS_OPTS_ELEM(NODE_PARALLEL_MIN_RECORDS, "parallel_min_records",
+                  FDS_OPTS_T_UINT,   FDS_OPTS_P_OPT),
     FDS_OPTS_ELEM(NODE_PROTO_FILE,   "proto_file",   FDS_OPTS_T_STRING, 0),
     FDS_OPTS_ELEM(NODE_MESSAGE_TYPE, "message_type", FDS_OPTS_T_STRING, 0),
     FDS_OPTS_NESTED(NODE_MAP,        "map",          args_map,          0),
@@ -255,11 +261,30 @@ parse_map(fds_xml_ctx_t* ctx, const fds_iemgr_t* iemgr,
     }
 }
 
+/**
+ * \brief Compute default worker count from online CPUs
+ *
+ * Defaults to half of logical CPUs, minimum 1.
+ */
+static uint32_t
+default_workers()
+{
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    if (cpus <= 0) {
+        return 1;
+    }
+
+    const uint32_t half = static_cast<uint32_t>(cpus / 2);
+    return (half == 0U) ? 1U : half;
+}
+
 Config
 parse_config(const char* params, const fds_iemgr_t* iemgr, ipx_ctx_t* ctx)
 {
     Config cfg;
     cfg.partition_mode = PartitionMode::RANDOM;
+    cfg.workers = default_workers();
+    cfg.parallel_min_records = 64;
 
     std::unique_ptr<fds_xml_t, decltype(&fds_xml_destroy)>
         xml(fds_xml_create(), &fds_xml_destroy);
@@ -316,6 +341,14 @@ parse_config(const char* params, const fds_iemgr_t* iemgr, ipx_ctx_t* ctx)
             cfg.blocking = content->val_bool;
             break;
 
+        case NODE_WORKERS:
+            cfg.workers = static_cast<uint32_t>(content->val_uint);
+            break;
+
+        case NODE_PARALLEL_MIN_RECORDS:
+            cfg.parallel_min_records = static_cast<uint32_t>(content->val_uint);
+            break;
+
         case NODE_PROTO_FILE:
             cfg.proto_file = content->ptr_string;
             break;
@@ -349,10 +382,15 @@ parse_config(const char* params, const fds_iemgr_t* iemgr, ipx_ctx_t* ctx)
     if (cfg.mappings.empty()) {
         throw std::runtime_error("At least one <field> mapping is required in <map>");
     }
+    if (cfg.workers == 0U) {
+        throw std::runtime_error("<workers> must be at least 1");
+    }
 
     IPX_CTX_INFO(ctx, "Configuration: brokers=%s, topic=%s, partition=%s",
                  cfg.brokers.c_str(), cfg.topic.c_str(),
                  cfg.partition_mode == PartitionMode::RSS ? "rss" : "random");
+    IPX_CTX_INFO(ctx, "Parallel conversion: workers=%u, parallel_min_records=%u",
+                 cfg.workers, cfg.parallel_min_records);
     IPX_CTX_INFO(ctx, "Proto file: %s, message type: %s",
                  cfg.proto_file.c_str(), cfg.message_type.c_str());
     IPX_CTX_INFO(ctx, "Field mappings: %zu configured", cfg.mappings.size());
