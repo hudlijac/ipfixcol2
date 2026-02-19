@@ -15,8 +15,6 @@
 #include <string>
 #include <cstdint>
 
-#include <google/protobuf/message.h>
-#include <google/protobuf/descriptor.h>
 #include <libfds.h>
 
 namespace protobuf_kafka {
@@ -78,10 +76,9 @@ public:
 private:
     const TranslationTable& m_table;
     PartitionMode m_partition_mode;
-
-    google::protobuf::Message* m_message;
-    const google::protobuf::Reflection* m_reflection;
     std::string m_buffer;
+    std::string m_tmp_utf8;
+    std::string m_tmp_packed;
 
     static constexpr uint32_t IANA_PEN = 0;
     static constexpr uint16_t ID_SRC_IPV4 = 8;
@@ -93,11 +90,18 @@ private:
     static constexpr uint16_t ID_PROTOCOL = 4;
     static constexpr uint16_t ID_FLOW_ID = 148;
 
-    /// Convert one scalar value into the protobuf field.
-    bool setFieldValue(const FieldEntry& entry, const uint8_t* data, size_t size, bool append);
+    /// Convert one scalar value and append encoded protobuf field into output buffer.
+    bool setFieldValue(const FieldEntry& entry, const uint8_t* data, size_t size);
 
-    /// Convert whole basicList into a repeated protobuf field.
+    /// Convert whole basicList and append encoded protobuf field(s) into output buffer.
     bool setBasicListField(const FieldEntry& entry, const struct fds_drec_field& field);
+
+    /// Convert one scalar value and append either encoded field or encoded packed element.
+    bool appendValue(const FieldEntry& entry,
+                     const uint8_t* data,
+                     size_t size,
+                     std::string& out,
+                     bool with_tag);
 
     /**
      * \brief Extract partition field from current IPFIX field (single-pass)

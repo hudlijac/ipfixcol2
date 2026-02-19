@@ -23,10 +23,10 @@ isUtf8Cont(uint8_t byte)
 /**
  * \brief Convert arbitrary bytes to valid UTF-8 by replacing invalid sequences with '?'
  */
-std::string
-sanitizeUtf8(const uint8_t* data, size_t size)
+void
+sanitizeUtf8(const uint8_t* data, size_t size, std::string& out)
 {
-    std::string out;
+    out.clear();
     out.reserve(size);
 
     size_t i = 0;
@@ -66,13 +66,11 @@ sanitizeUtf8(const uint8_t* data, size_t size)
 
         if (ok && need == 2) {
             const uint8_t c1 = data[i + 1];
-            // Reject overlong 3-byte sequences and UTF-16 surrogate range.
             if ((c0 == 0xE0U && c1 < 0xA0U) || (c0 == 0xEDU && c1 >= 0xA0U)) {
                 ok = false;
             }
         } else if (ok && need == 3) {
             const uint8_t c1 = data[i + 1];
-            // Reject overlong 4-byte sequences and code points above U+10FFFF.
             if ((c0 == 0xF0U && c1 < 0x90U) || (c0 == 0xF4U && c1 > 0x8FU)) {
                 ok = false;
             }
@@ -87,8 +85,50 @@ sanitizeUtf8(const uint8_t* data, size_t size)
         out.append(reinterpret_cast<const char*>(data + i), need + 1);
         i += need + 1;
     }
+}
 
-    return out;
+inline void
+appendVarint(std::string& out, uint64_t value)
+{
+    while (value >= 0x80U) {
+        out.push_back(static_cast<char>((value & 0x7FU) | 0x80U));
+        value >>= 7U;
+    }
+    out.push_back(static_cast<char>(value));
+}
+
+inline void
+appendFixed32(std::string& out, uint32_t value)
+{
+    out.push_back(static_cast<char>(value & 0xFFU));
+    out.push_back(static_cast<char>((value >> 8U) & 0xFFU));
+    out.push_back(static_cast<char>((value >> 16U) & 0xFFU));
+    out.push_back(static_cast<char>((value >> 24U) & 0xFFU));
+}
+
+inline void
+appendFixed64(std::string& out, uint64_t value)
+{
+    out.push_back(static_cast<char>(value & 0xFFU));
+    out.push_back(static_cast<char>((value >> 8U) & 0xFFU));
+    out.push_back(static_cast<char>((value >> 16U) & 0xFFU));
+    out.push_back(static_cast<char>((value >> 24U) & 0xFFU));
+    out.push_back(static_cast<char>((value >> 32U) & 0xFFU));
+    out.push_back(static_cast<char>((value >> 40U) & 0xFFU));
+    out.push_back(static_cast<char>((value >> 48U) & 0xFFU));
+    out.push_back(static_cast<char>((value >> 56U) & 0xFFU));
+}
+
+inline uint32_t
+zigzag32(int32_t value)
+{
+    return static_cast<uint32_t>((value << 1) ^ (value >> 31));
+}
+
+inline uint64_t
+zigzag64(int64_t value)
+{
+    return static_cast<uint64_t>((value << 1) ^ (value >> 63));
 }
 
 } // namespace
@@ -98,18 +138,14 @@ FlowConverter::FlowConverter(ProtoSchema& schema,
                              PartitionMode mode)
     : m_table(table)
     , m_partition_mode(mode)
-    , m_message(nullptr)
-    , m_reflection(nullptr)
 {
-    m_message = schema.createMessage();
-    m_reflection = m_message->GetReflection();
+    (void)schema;
     m_buffer.reserve(4096);
+    m_tmp_utf8.reserve(256);
+    m_tmp_packed.reserve(512);
 }
 
-FlowConverter::~FlowConverter()
-{
-    delete m_message;
-}
+FlowConverter::~FlowConverter() = default;
 
 bool
 FlowConverter::convert(const fds_drec* rec,
@@ -117,16 +153,16 @@ FlowConverter::convert(const fds_drec* rec,
                        size_t* out_len,
                        PartitionKey* partition_key)
 {
-    m_message->Clear();
+    m_buffer.clear();
+
     PartitionKey pk_local{};
-    bool need_partition_key = (m_partition_mode == PartitionMode::RSS && partition_key);
+    const bool need_partition_key = (m_partition_mode == PartitionMode::RSS && partition_key);
 
     struct fds_drec_iter it;
     fds_drec_iter_init(&it, const_cast<struct fds_drec*>(rec), 0);
 
     int rc = FDS_OK;
     while ((rc = fds_drec_iter_next(&it)) != FDS_EOC) {
-        // fds_drec_iter_next() returns field index on success (0, 1, 2, ...).
         if (rc < 0 || it.field.info == nullptr) {
             continue;
         }
@@ -139,8 +175,8 @@ FlowConverter::convert(const fds_drec* rec,
         const bool is_basic_list = (info->def != nullptr && info->def->data_type == FDS_ET_BASIC_LIST);
         if (is_basic_list) {
             struct fds_blist_iter list_it;
-            fds_blist_iter_init(&list_it, &it.field, NULL);
-            int list_rc = fds_blist_iter_next(&list_it);
+            fds_blist_iter_init(&list_it, &it.field, nullptr);
+            const int list_rc = fds_blist_iter_next(&list_it);
             if (list_rc == FDS_OK && list_it.field.info != nullptr) {
                 key.has_list_elem = true;
                 key.list_pen = list_it.field.info->en;
@@ -159,12 +195,9 @@ FlowConverter::convert(const fds_drec* rec,
         }
 
         if (entry != nullptr) {
-            bool converted = false;
-            if (entry->is_list) {
-                converted = setBasicListField(*entry, it.field);
-            } else {
-                converted = setFieldValue(*entry, it.field.data, it.field.size, false);
-            }
+            const bool converted = entry->is_list
+                ? setBasicListField(*entry, it.field)
+                : setFieldValue(*entry, it.field.data, it.field.size);
             if (!converted) {
                 continue;
             }
@@ -181,237 +214,267 @@ FlowConverter::convert(const fds_drec* rec,
         *partition_key = pk_local;
     }
 
-    m_buffer.clear();
-    if (!m_message->SerializeToString(&m_buffer)) {
-        return false;
-    }
-
     *out_data = m_buffer.data();
     *out_len = m_buffer.size();
     return true;
 }
 
 bool
-FlowConverter::setFieldValue(const FieldEntry& entry, const uint8_t* data, size_t size, bool append)
+FlowConverter::setFieldValue(const FieldEntry& entry, const uint8_t* data, size_t size)
 {
-    const google::protobuf::FieldDescriptor* fd = entry.fd;
-    const bool use_append = append || fd->is_repeated();
-
-    bool is_datetime = (entry.ipfix_type == FDS_ET_DATE_TIME_SECONDS ||
-                        entry.ipfix_type == FDS_ET_DATE_TIME_MILLISECONDS ||
-                        entry.ipfix_type == FDS_ET_DATE_TIME_MICROSECONDS ||
-                        entry.ipfix_type == FDS_ET_DATE_TIME_NANOSECONDS);
-
-    switch (fd->type()) {
-    case google::protobuf::FieldDescriptor::TYPE_DOUBLE:
-        if (size == 8) {
-            double val;
-            memcpy(&val, data, 8);
-            if (use_append) {
-                m_reflection->AddDouble(m_message, fd, val);
-            } else {
-                m_reflection->SetDouble(m_message, fd, val);
-            }
+    if (entry.proto_packed) {
+        m_tmp_packed.clear();
+        if (!appendValue(entry, data, size, m_tmp_packed, false)) {
+            return false;
         }
-        return true;
-
-    case google::protobuf::FieldDescriptor::TYPE_FLOAT:
-        if (size == 4) {
-            float val;
-            memcpy(&val, data, 4);
-            if (use_append) {
-                m_reflection->AddFloat(m_message, fd, val);
-            } else {
-                m_reflection->SetFloat(m_message, fd, val);
-            }
-        }
-        return true;
-
-    case google::protobuf::FieldDescriptor::TYPE_INT64:
-    case google::protobuf::FieldDescriptor::TYPE_SINT64:
-    case google::protobuf::FieldDescriptor::TYPE_SFIXED64: {
-        if (is_datetime) {
-            uint64_t ts_ms = 0;
-            if (fds_get_datetime_lp_be(data, size, entry.ipfix_type, &ts_ms) == FDS_OK) {
-                if (use_append) {
-                    m_reflection->AddInt64(m_message, fd, static_cast<int64_t>(ts_ms));
-                } else {
-                    m_reflection->SetInt64(m_message, fd, static_cast<int64_t>(ts_ms));
-                }
-                return true;
-            }
-        } else {
-            int64_t val = 0;
-            if (fds_get_int_be(data, size, &val) == FDS_OK) {
-                if (use_append) {
-                    m_reflection->AddInt64(m_message, fd, val);
-                } else {
-                    m_reflection->SetInt64(m_message, fd, val);
-                }
-                return true;
-            }
-        }
-        return false;
-    }
-
-    case google::protobuf::FieldDescriptor::TYPE_UINT64:
-    case google::protobuf::FieldDescriptor::TYPE_FIXED64: {
-        if (is_datetime) {
-            uint64_t ts_ms = 0;
-            if (fds_get_datetime_lp_be(data, size, entry.ipfix_type, &ts_ms) == FDS_OK) {
-                if (use_append) {
-                    m_reflection->AddUInt64(m_message, fd, ts_ms);
-                } else {
-                    m_reflection->SetUInt64(m_message, fd, ts_ms);
-                }
-                return true;
-            }
-        } else {
-            uint64_t val = 0;
-            if (fds_get_uint_be(data, size, &val) == FDS_OK) {
-                if (use_append) {
-                    m_reflection->AddUInt64(m_message, fd, val);
-                } else {
-                    m_reflection->SetUInt64(m_message, fd, val);
-                }
-                return true;
-            }
-        }
-        return false;
-    }
-
-    case google::protobuf::FieldDescriptor::TYPE_INT32:
-    case google::protobuf::FieldDescriptor::TYPE_SINT32:
-    case google::protobuf::FieldDescriptor::TYPE_SFIXED32: {
-        if (is_datetime) {
-            uint64_t ts_ms = 0;
-            if (fds_get_datetime_lp_be(data, size, entry.ipfix_type, &ts_ms) == FDS_OK) {
-                const int32_t value = static_cast<int32_t>(ts_ms / 1000);
-                if (use_append) {
-                    m_reflection->AddInt32(m_message, fd, value);
-                } else {
-                    m_reflection->SetInt32(m_message, fd, value);
-                }
-                return true;
-            }
-        } else {
-            int64_t val = 0;
-            if (fds_get_int_be(data, size, &val) == FDS_OK) {
-                const int32_t value = static_cast<int32_t>(val);
-                if (use_append) {
-                    m_reflection->AddInt32(m_message, fd, value);
-                } else {
-                    m_reflection->SetInt32(m_message, fd, value);
-                }
-                return true;
-            }
-        }
-        return false;
-    }
-
-    case google::protobuf::FieldDescriptor::TYPE_UINT32:
-    case google::protobuf::FieldDescriptor::TYPE_FIXED32: {
-        if (is_datetime) {
-            uint64_t ts_ms = 0;
-            if (fds_get_datetime_lp_be(data, size, entry.ipfix_type, &ts_ms) == FDS_OK) {
-                const uint32_t value = static_cast<uint32_t>(ts_ms / 1000);
-                if (use_append) {
-                    m_reflection->AddUInt32(m_message, fd, value);
-                } else {
-                    m_reflection->SetUInt32(m_message, fd, value);
-                }
-                return true;
-            }
-        } else {
-            uint64_t val = 0;
-            if (fds_get_uint_be(data, size, &val) == FDS_OK) {
-                const uint32_t value = static_cast<uint32_t>(val);
-                if (use_append) {
-                    m_reflection->AddUInt32(m_message, fd, value);
-                } else {
-                    m_reflection->SetUInt32(m_message, fd, value);
-                }
-                return true;
-            }
-        }
-        return false;
-    }
-
-    case google::protobuf::FieldDescriptor::TYPE_BOOL: {
-        uint64_t val = 0;
-        if (fds_get_uint_be(data, size, &val) == FDS_OK) {
-            const bool value = (val != 0);
-            if (use_append) {
-                m_reflection->AddBool(m_message, fd, value);
-            } else {
-                m_reflection->SetBool(m_message, fd, value);
-            }
+        if (m_tmp_packed.empty()) {
             return true;
         }
-        return false;
-    }
 
-    case google::protobuf::FieldDescriptor::TYPE_STRING:
-    {
-        std::string value = sanitizeUtf8(data, size);
-        if (use_append) {
-            m_reflection->AddString(m_message, fd, value);
-        } else {
-            m_reflection->SetString(m_message, fd, value);
-        }
+        m_buffer.append(reinterpret_cast<const char*>(entry.tag_bytes.data()), entry.tag_len);
+        appendVarint(m_buffer, m_tmp_packed.size());
+        m_buffer.append(m_tmp_packed);
         return true;
     }
 
-    case google::protobuf::FieldDescriptor::TYPE_BYTES:
-    {
-        std::string value(reinterpret_cast<const char*>(data), size);
-        if (use_append) {
-            m_reflection->AddString(m_message, fd, value);
-        } else {
-            m_reflection->SetString(m_message, fd, value);
-        }
-        return true;
-    }
-
-    case google::protobuf::FieldDescriptor::TYPE_ENUM: {
-        uint64_t val = 0;
-        if (fds_get_uint_be(data, size, &val) == FDS_OK) {
-            const int enum_value = static_cast<int>(val);
-            if (use_append) {
-                m_reflection->AddEnumValue(m_message, fd, enum_value);
-            } else {
-                m_reflection->SetEnumValue(m_message, fd, enum_value);
-            }
-            return true;
-        }
-        return false;
-    }
-
-    default:
-        return false;
-    }
-
-    return false;
+    return appendValue(entry, data, size, m_buffer, true);
 }
 
 bool
 FlowConverter::setBasicListField(const FieldEntry& entry, const struct fds_drec_field& field)
 {
-    if (!entry.is_list || !entry.fd->is_repeated()) {
+    if (!entry.is_list || !entry.proto_repeated) {
         return false;
     }
 
     struct fds_blist_iter list_it;
-    fds_blist_iter_init(&list_it, const_cast<struct fds_drec_field*>(&field), NULL);
+    fds_blist_iter_init(&list_it, const_cast<struct fds_drec_field*>(&field), nullptr);
 
     int rc = FDS_OK;
+    if (entry.proto_packed) {
+        m_tmp_packed.clear();
+
+        while ((rc = fds_blist_iter_next(&list_it)) == FDS_OK) {
+            if (!appendValue(entry, list_it.field.data, list_it.field.size, m_tmp_packed, false)) {
+                return false;
+            }
+        }
+
+        if (rc != FDS_EOC) {
+            return false;
+        }
+
+        if (!m_tmp_packed.empty()) {
+            m_buffer.append(reinterpret_cast<const char*>(entry.tag_bytes.data()), entry.tag_len);
+            appendVarint(m_buffer, m_tmp_packed.size());
+            m_buffer.append(m_tmp_packed);
+        }
+
+        return true;
+    }
+
     while ((rc = fds_blist_iter_next(&list_it)) == FDS_OK) {
-        if (!setFieldValue(entry, list_it.field.data, list_it.field.size, true)) {
+        if (!appendValue(entry, list_it.field.data, list_it.field.size, m_buffer, true)) {
             return false;
         }
     }
 
     return rc == FDS_EOC;
+}
+
+bool
+FlowConverter::appendValue(const FieldEntry& entry,
+                           const uint8_t* data,
+                           size_t size,
+                           std::string& out,
+                           bool with_tag)
+{
+    using ProtoType = google::protobuf::FieldDescriptor::Type;
+
+    const bool is_datetime = (entry.ipfix_type == FDS_ET_DATE_TIME_SECONDS ||
+                              entry.ipfix_type == FDS_ET_DATE_TIME_MILLISECONDS ||
+                              entry.ipfix_type == FDS_ET_DATE_TIME_MICROSECONDS ||
+                              entry.ipfix_type == FDS_ET_DATE_TIME_NANOSECONDS);
+
+    auto appendTagIfNeeded = [&]() {
+        if (with_tag) {
+            out.append(reinterpret_cast<const char*>(entry.tag_bytes.data()), entry.tag_len);
+        }
+    };
+
+    auto appendLengthDelimited = [&](const uint8_t* ptr, size_t len) {
+        appendTagIfNeeded();
+        appendVarint(out, len);
+        if (len > 0) {
+            out.append(reinterpret_cast<const char*>(ptr), len);
+        }
+    };
+
+    switch (entry.proto_type) {
+    case ProtoType::TYPE_DOUBLE:
+        if (size != 8) {
+            return true;
+        }
+        {
+            double value = 0;
+            uint64_t bits = 0;
+            std::memcpy(&value, data, sizeof(value));
+            std::memcpy(&bits, &value, sizeof(bits));
+            appendTagIfNeeded();
+            appendFixed64(out, bits);
+            return true;
+        }
+
+    case ProtoType::TYPE_FLOAT:
+        if (size != 4) {
+            return true;
+        }
+        {
+            float value = 0;
+            uint32_t bits = 0;
+            std::memcpy(&value, data, sizeof(value));
+            std::memcpy(&bits, &value, sizeof(bits));
+            appendTagIfNeeded();
+            appendFixed32(out, bits);
+            return true;
+        }
+
+    case ProtoType::TYPE_INT64:
+    case ProtoType::TYPE_SINT64:
+    case ProtoType::TYPE_SFIXED64: {
+        int64_t value = 0;
+        if (is_datetime) {
+            uint64_t ts_ms = 0;
+            if (fds_get_datetime_lp_be(data, size, entry.ipfix_type, &ts_ms) != FDS_OK) {
+                return false;
+            }
+            value = static_cast<int64_t>(ts_ms);
+        } else {
+            if (fds_get_int_be(data, size, &value) != FDS_OK) {
+                return false;
+            }
+        }
+
+        appendTagIfNeeded();
+        if (entry.proto_type == ProtoType::TYPE_SFIXED64) {
+            appendFixed64(out, static_cast<uint64_t>(value));
+        } else if (entry.proto_type == ProtoType::TYPE_SINT64) {
+            appendVarint(out, zigzag64(value));
+        } else {
+            appendVarint(out, static_cast<uint64_t>(value));
+        }
+        return true;
+    }
+
+    case ProtoType::TYPE_UINT64:
+    case ProtoType::TYPE_FIXED64: {
+        uint64_t value = 0;
+        if (is_datetime) {
+            if (fds_get_datetime_lp_be(data, size, entry.ipfix_type, &value) != FDS_OK) {
+                return false;
+            }
+        } else {
+            if (fds_get_uint_be(data, size, &value) != FDS_OK) {
+                return false;
+            }
+        }
+
+        appendTagIfNeeded();
+        if (entry.proto_type == ProtoType::TYPE_FIXED64) {
+            appendFixed64(out, value);
+        } else {
+            appendVarint(out, value);
+        }
+        return true;
+    }
+
+    case ProtoType::TYPE_INT32:
+    case ProtoType::TYPE_SINT32:
+    case ProtoType::TYPE_SFIXED32: {
+        int32_t value = 0;
+        if (is_datetime) {
+            uint64_t ts_ms = 0;
+            if (fds_get_datetime_lp_be(data, size, entry.ipfix_type, &ts_ms) != FDS_OK) {
+                return false;
+            }
+            value = static_cast<int32_t>(ts_ms / 1000U);
+        } else {
+            int64_t val = 0;
+            if (fds_get_int_be(data, size, &val) != FDS_OK) {
+                return false;
+            }
+            value = static_cast<int32_t>(val);
+        }
+
+        appendTagIfNeeded();
+        if (entry.proto_type == ProtoType::TYPE_SFIXED32) {
+            appendFixed32(out, static_cast<uint32_t>(value));
+        } else if (entry.proto_type == ProtoType::TYPE_SINT32) {
+            appendVarint(out, zigzag32(value));
+        } else {
+            appendVarint(out, static_cast<uint64_t>(static_cast<int64_t>(value)));
+        }
+        return true;
+    }
+
+    case ProtoType::TYPE_UINT32:
+    case ProtoType::TYPE_FIXED32: {
+        uint32_t value = 0;
+        if (is_datetime) {
+            uint64_t ts_ms = 0;
+            if (fds_get_datetime_lp_be(data, size, entry.ipfix_type, &ts_ms) != FDS_OK) {
+                return false;
+            }
+            value = static_cast<uint32_t>(ts_ms / 1000U);
+        } else {
+            uint64_t val = 0;
+            if (fds_get_uint_be(data, size, &val) != FDS_OK) {
+                return false;
+            }
+            value = static_cast<uint32_t>(val);
+        }
+
+        appendTagIfNeeded();
+        if (entry.proto_type == ProtoType::TYPE_FIXED32) {
+            appendFixed32(out, value);
+        } else {
+            appendVarint(out, value);
+        }
+        return true;
+    }
+
+    case ProtoType::TYPE_BOOL: {
+        uint64_t val = 0;
+        if (fds_get_uint_be(data, size, &val) != FDS_OK) {
+            return false;
+        }
+        appendTagIfNeeded();
+        appendVarint(out, val != 0 ? 1U : 0U);
+        return true;
+    }
+
+    case ProtoType::TYPE_STRING:
+        sanitizeUtf8(data, size, m_tmp_utf8);
+        appendLengthDelimited(reinterpret_cast<const uint8_t*>(m_tmp_utf8.data()), m_tmp_utf8.size());
+        return true;
+
+    case ProtoType::TYPE_BYTES:
+        appendLengthDelimited(data, size);
+        return true;
+
+    case ProtoType::TYPE_ENUM: {
+        uint64_t val = 0;
+        if (fds_get_uint_be(data, size, &val) != FDS_OK) {
+            return false;
+        }
+        appendTagIfNeeded();
+        appendVarint(out, static_cast<uint64_t>(static_cast<int64_t>(static_cast<int>(val))));
+        return true;
+    }
+
+    default:
+        return false;
+    }
 }
 
 void
